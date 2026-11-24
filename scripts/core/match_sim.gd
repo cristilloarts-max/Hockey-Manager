@@ -12,14 +12,24 @@ extends RefCounted
 
 const SEGMENT := 40
 const OT_SEGMENT := 30
-const BASE_SHOTS_PER_SEC := 28.5 / 3600.0
-const BASE_GOAL_PROB := 0.087
-## How strongly rating gaps swing results. Tuned with a full-season run:
-## ~6.0 goals/game, .902 sv%, ~20% PP, standings spread of ~58-127 points.
-const RATING_EXP := 0.8
+const BASE_SHOTS_PER_SEC := 29.0 / 3600.0
+## Calibrated with tools/sim_calibration.py over full seasons: ~6.1 goals/game,
+## .900 sv%, ~19% PP, 1-4 100-point players, 40-goal leaders around 45-54,
+## starting goalies ~65-72 GP, standings ~60-120 points.
+## How strongly unit rating gaps swing shot generation.
+const RATING_EXP := 0.6
+## How strongly goalie quality swings save percentage.
+const GOALIE_EXP := 0.5
+## Overall scoring level (scales every shot's goal chance).
+const SH_SCALE := 0.87
+## Share of a shooter's goal chance taken from his real shooting % (rest from ratings).
+const TENDENCY_WEIGHT := 0.6
+## Shot and assist shares follow real per-60 rates raised to these powers.
+const SHOT_WEIGHT_EXP := 0.85
+const ASSIST_EXP := 1.4
 const PENALTIES_PER_SEC := 3.2 / 3600.0
-const F_LINE_SHARE := [0.35, 0.30, 0.21, 0.14]
-const D_PAIR_SHARE := [0.40, 0.34, 0.26]
+const F_LINE_SHARE := [0.31, 0.28, 0.23, 0.18]
+const D_PAIR_SHARE := [0.38, 0.34, 0.28]
 const PENALTY_TYPES := ["tripping", "hooking", "slashing", "holding", "interference",
 	"roughing", "high-sticking", "cross-checking", "delay of game", "too many men"]
 
@@ -385,11 +395,13 @@ func _shot(i: int, units: Array, skaters: Array, t_in_period: int, ot: bool) -> 
 	var pp_threat: int = s["tac"].get_value("power_play.threat")
 	for e in unit:
 		var p = e["p"]
-		var w: float = pow(p.attr("shooting"), 2) * (0.55 if e["spot"] in ["LD", "RD"] else 1.0)
+		var w: float = pow(p.shots60(), SHOT_WEIGHT_EXP)
 		if pp and pp_threat == 0 and _one_timer_bonus(e):
-			w *= 1.4
+			w *= 1.25
 		elif pp and pp_threat == 1 and e["spot"] in ["LD", "RD"]:
-			w *= 1.6
+			w *= 1.5
+		elif pp and pp_threat == 3 and e["spot"] == "C":
+			w *= 1.3
 		weights.append(w)
 	var shooter_e = unit[_weighted_index(weights)]
 	var shooter = shooter_e["p"]
@@ -403,19 +415,17 @@ func _shot(i: int, units: Array, skaters: Array, t_in_period: int, ot: bool) -> 
 	if empty_net or goalie == null:
 		prob = 0.55
 	else:
-		var shoot: float = shooting_value(shooter, shooter_e["spot"])
+		prob = goal_chance(shooter, shooter_e["spot"], goalie)
 		if one_timer:
-			shoot *= 1.05
-		var g: float = goalie_rating(goalie)
-		prob = BASE_GOAL_PROB * pow(shoot / League.norms["shooting"], RATING_EXP) * pow(League.norms["goalie"] / g, RATING_EXP)
+			prob *= 1.04
 		prob *= s["mods"]["quality_for"] * opp["mods"]["quality_against"]
 		if pp:
-			prob *= 1.25 * s["mods"]["pp_quality"] * opp["mods"]["pk_quality"]
+			prob *= 1.2 * s["mods"]["pp_quality"] * opp["mods"]["pk_quality"]
 		elif sh:
 			prob *= 1.1
 		if ot:
-			prob *= 1.25
-		prob = clampf(prob, 0.015, 0.40)
+			prob *= 1.2
+		prob = clampf(prob, 0.01, 0.45)
 		goalie_stats[goalie.id]["sa"] += 1
 
 	var shot_type := _shot_type(shooter_e, one_timer)
@@ -445,6 +455,16 @@ static func skater_defense(p, spot: String) -> float:
 static func shooting_value(p, spot: String) -> float:
 	return (0.6 * p.attr("shooting") + 0.2 * p.attr("offense_iq") + 0.2 * p.attr("puck_handling")) \
 		* p.position_factor(spot)
+
+
+## Goal chance for a shot at even strength before situation and tactics:
+## mostly the shooter's real (regressed) shooting %, partly his ratings,
+## against this goalie.
+static func goal_chance(p, spot: String, goalie) -> float:
+	var pos_avg := 0.05 if spot in ["LD", "RD"] else 0.115
+	var rating_pct := pos_avg * pow(shooting_value(p, spot) / League.norms["shooting"], RATING_EXP)
+	var base: float = TENDENCY_WEIGHT * p.sh_pct() + (1.0 - TENDENCY_WEIGHT) * rating_pct
+	return SH_SCALE * base * pow(League.norms["goalie"] / goalie_rating(goalie), GOALIE_EXP)
 
 
 static func goalie_rating(g) -> float:
@@ -483,14 +503,14 @@ func _goal(i: int, unit: Array, opp_unit: Array, shooter_e: Dictionary, shot_typ
 	for e in unit:
 		if e["p"] != shooter:
 			helpers.append(e["p"])
-			weights.append(pow(e["p"].attr("passing"), 2))
+			weights.append(pow(e["p"].a60(), ASSIST_EXP))
 	var assists := []
-	if not helpers.is_empty() and rng.randf() < 0.9:
+	if not helpers.is_empty() and rng.randf() < 0.93:
 		var k := _weighted_index(weights)
 		assists.append(helpers[k])
 		helpers.remove_at(k)
 		weights.remove_at(k)
-		if not helpers.is_empty() and rng.randf() < 0.7:
+		if not helpers.is_empty() and rng.randf() < 0.72:
 			assists.append(helpers[_weighted_index(weights)])
 	for a in assists:
 		_sl(a, s["team"].id)["a"] += 1

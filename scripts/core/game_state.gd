@@ -1,6 +1,6 @@
 extends Node
 ## Autoload "Game": the running save: your team, the calendar, schedule,
-## results, standings, stats, lineups and tactics.
+## results, standings, stats, lineups, tactics, playoffs and awards.
 
 signal day_advanced
 signal season_finished
@@ -9,16 +9,22 @@ const SAVE_PATH := "user://save.json"
 const SEASON_START := {"year": 2026, "month": 10, "day": 7, "hour": 12}
 const MONTHS := ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 const WEEKDAYS := ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+const ROUND_NAMES := ["First Round", "Second Round", "Conference Final", "Stanton Cup Final"]
 
 var active := false
 var user_team_id := ""
 var world_seed := 0
 var day := 0                 ## next day to be played
+var phase := "regular"       ## "regular", "playoffs", "done"
 var schedule := []           ## {day, home, away, played, hg, ag, ot}
-var box_scores := {}         ## schedule index (String) -> full result (your games only)
+var box_scores := {}         ## key ("12" regular / "p3" playoffs) -> full result (your games only)
 var standings := {}          ## team -> record
-var skater_stats := {}       ## pid (String) -> season line
-var goalie_season := {}      ## pid (String) -> season line
+var skater_stats := {}       ## pid (String) -> regular-season line
+var goalie_season := {}      ## pid (String) -> regular-season line
+var playoff_skaters := {}    ## pid (String) -> playoff line
+var playoff_goalies := {}    ## pid (String) -> playoff line
+var playoffs := {}           ## {"series": [], "games": [], "round": 1, "next_day": d, "champion": ""}
+var awards := []             ## {name, kind, desc, winner, team, line, finalists}
 var lineups := {}            ## team -> Lineup
 var tactics := {}            ## team -> Tactics
 var inbox := []              ## {day, title, body}
@@ -37,35 +43,29 @@ func new_game(team_id: String, game_seed: int = 0) -> void:
 	user_team_id = team_id
 	world_seed = game_seed if game_seed != 0 else int(Time.get_unix_time_from_system())
 	day = 0
-	box_scores.clear()
-	skater_stats.clear()
-	goalie_season.clear()
+	phase = "regular"
+	for d in [box_scores, skater_stats, goalie_season, playoff_skaters, playoff_goalies, playoffs,
+			form, condition, rank_history, morale, standings, lineups, tactics]:
+		d.clear()
+	awards.clear()
 	inbox.clear()
-	form.clear()
-	condition.clear()
-	rank_history.clear()
 	last_sim_day = -1
 	var rng := RandomNumberGenerator.new()
 	rng.seed = world_seed
-	morale.clear()
 	for pid in League.players:
 		morale[str(pid)] = rng.randi_range(55, 80)
 	schedule = Schedule.generate(League.team_list(), rng)
 	for g in schedule:
 		g["played"] = false
-	standings.clear()
-	lineups.clear()
-	tactics.clear()
 	for id in League.teams:
 		standings[id] = _empty_record()
-		var l := Lineup.new()
-		l.auto_fill(League.roster(id))
-		lineups[id] = l
+		lineups[id] = League.default_lineup(id)
 		tactics[id] = Tactics.new()
 	active = true
 	var team := League.get_team(team_id)
 	add_message("Welcome to the %s" % team.full_name(),
-		"The owner has handed you the keys. Check your roster and lines, then hit Continue to start the season.\n\nCap space: %s." % money(League.cap_space(team_id)))
+		"The owner has handed you the keys. Your lines are set the way the team plays them right now.\n\nNHL roster: %d / %d.  Cap space: %s.  Check Squad > Players and Lines, then hit Continue." % [
+			League.nhl_roster(team_id).size(), roster_max(), money(League.cap_space(team_id))])
 
 
 func _empty_record() -> Dictionary:
@@ -95,6 +95,10 @@ func short_date(d: int) -> String:
 
 
 func is_season_over() -> bool:
+	return phase == "done"
+
+
+func regular_season_over() -> bool:
 	return schedule.all(func(g): return g["played"])
 
 
@@ -122,10 +126,72 @@ func last_game_index(team_id: String) -> int:
 	return last
 
 
+## {day, home, away, label} for your next game (regular season or playoffs), or {}.
+func next_game_info() -> Dictionary:
+	if phase == "regular":
+		var i := next_game_index(user_team_id)
+		if i >= 0:
+			var g: Dictionary = schedule[i]
+			return {"day": g["day"], "home": g["home"], "away": g["away"], "label": ""}
+	elif phase == "playoffs":
+		var s := user_series()
+		if not s.is_empty() and s["winner"] == "":
+			var n: int = s["w_high"] + s["w_low"] + 1
+			var home: String = s["high"] if n in [1, 2, 5, 7] else s["low"]
+			return {"day": playoffs["next_day"], "home": home, "away": s["low"] if home == s["high"] else s["high"],
+				"label": "%s, game %d" % [ROUND_NAMES[s["round"] - 1], n]}
+	return {}
+
+
+# ------------------------------------------------------------------ roster rules
+
+func roster_max() -> int:
+	return int(League.finances.get("roster_max", 23))
+
+
+func roster_min() -> int:
+	return int(League.finances.get("roster_min", 20))
+
+
+## Reasons your team can't play right now (empty = legal).
+func roster_problems(team_id: String) -> Array:
+	var out := []
+	var nhl := League.nhl_roster(team_id)
+	var goalies := nhl.filter(func(p): return p.is_goalie()).size()
+	if nhl.size() > roster_max():
+		out.append("Too many players on the NHL roster: %d (max %d). Send someone to the reserve list." % [nhl.size(), roster_max()])
+	if nhl.size() < roster_min():
+		out.append("Not enough players on the NHL roster: %d (min %d). Call someone up." % [nhl.size(), roster_min()])
+	if goalies < 2:
+		out.append("You need two goalies on the NHL roster (you have %d)." % goalies)
+	var space := League.cap_space(team_id)
+	if space < 0:
+		out.append("Over the salary cap by %s. Send down or move a contract to get under it." % money(-space))
+	return out
+
+
+## Move a player between the NHL roster and the reserve list.
+func set_roster_status(pid: int, status: String) -> void:
+	var p := League.get_player(pid)
+	if p == null:
+		return
+	p.roster_status = status
+	var l: Lineup = lineups[p.team_id]
+	l.drop_ineligible(League.nhl_roster(p.team_id))
+
+
 # ------------------------------------------------------------------ simulation
 
-## Plays the next day that has games. Returns schedule indexes of your games played.
+## Plays the next game day. Returns box-score keys of your games played.
 func sim_day() -> Array:
+	if phase == "regular":
+		return _sim_regular_day()
+	if phase == "playoffs":
+		return _sim_playoff_day()
+	return []
+
+
+func _sim_regular_day() -> Array:
 	var next_day := -1
 	for g in schedule:
 		if not g["played"]:
@@ -138,57 +204,68 @@ func sim_day() -> Array:
 	for i in schedule.size():
 		var g: Dictionary = schedule[i]
 		if g["day"] == next_day and not g["played"]:
-			_play_game(i)
+			_play_regular(i)
 			if g["home"] == user_team_id or g["away"] == user_team_id:
-				mine.append(i)
+				mine.append(str(i))
 	day = next_day + 1
 	_record_ranks()
+	if regular_season_over():
+		_on_regular_season_over()
 	day_advanced.emit()
-	if is_season_over():
-		_on_season_over()
 	return mine
 
 
-## Sims day by day until your next game has been played.
+## Sims until your next game has been played. In the playoffs, once you're
+## out, it sims one round at a time.
 func sim_to_next_game() -> Array:
+	if phase == "playoffs" and user_out():
+		var round_now: int = playoffs["round"]
+		while phase == "playoffs" and playoffs["round"] == round_now:
+			sim_day()
+		return []
 	while not is_season_over():
 		var mine := sim_day()
 		if not mine.is_empty():
 			return mine
+		if phase == "playoffs" and user_out():
+			return []
 	return []
 
 
 func sim_to_end() -> void:
-	while not is_season_over():
-		for i in schedule.size():
-			if not schedule[i]["played"]:
-				var d: int = schedule[i]["day"]
-				_recover(d)
-				for j in range(i, schedule.size()):
-					if schedule[j]["day"] != d:
-						break
-					if not schedule[j]["played"]:
-						_play_game(j)
-				day = d + 1
-				_record_ranks()
-				break
+	while phase == "regular":
+		_sim_regular_day()
+	while phase == "playoffs":
+		_sim_playoff_day()
 	day_advanced.emit()
-	_on_season_over()
 
 
-func _play_game(index: int) -> void:
-	var g: Dictionary = schedule[index]
-	var teams := [g["home"], g["away"]]
-	for t in teams:
+## Sets up lineups (goalie rotation, gaps) and plays one game.
+func _simulate(home: String, away: String, seed_value: int, is_playoff: bool) -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value
+	var game_lineups := []
+	for t in [home, away]:
 		var l: Lineup = lineups[t]
-		if t == user_team_id:
-			if not l.problems().is_empty():
-				l.auto_fill(League.roster(t), true)
-		else:
-			l.auto_fill(League.roster(t), false)
-	var res := MatchSim.play(League.get_team(g["home"]), League.get_team(g["away"]),
-		lineups[g["home"]], lineups[g["away"]], tactics[g["home"]], tactics[g["away"]],
-		hash([world_seed, index]))
+		var eligible := League.nhl_roster(t)
+		if t != user_team_id or not l.problems().is_empty():
+			l.drop_ineligible(eligible)
+			l.auto_fill(eligible, true)
+		var gl := l
+		if l.goalies[1] != 0:
+			var starter_tired := condition_of(l.goalies[0]) < (70.0 if is_playoff else 82.0)
+			var rest_day := not is_playoff and rng.randf() > l.starter_share
+			if starter_tired or rest_day:
+				gl = Lineup.from_dict(l.to_dict())
+				gl.goalies = [l.goalies[1], l.goalies[0]]
+		game_lineups.append(gl)
+	return MatchSim.play(League.get_team(home), League.get_team(away), game_lineups[0], game_lineups[1],
+		tactics[home], tactics[away], seed_value, is_playoff)
+
+
+func _play_regular(index: int) -> void:
+	var g: Dictionary = schedule[index]
+	var res := _simulate(g["home"], g["away"], hash([world_seed, index]), false)
 	g["played"] = true
 	g["hg"] = res["home_goals"]
 	g["ag"] = res["away_goals"]
@@ -233,24 +310,38 @@ func _apply_result(res: Dictionary) -> void:
 			r["last10"].pop_front()
 		r["streak"] = _streak(r["streak"], outcome)
 
+	_add_stats(res, skater_stats, goalie_season)
+	_update_players(res, winner, skater_stats, goalie_season)
+
+	if home == user_team_id or away == user_team_id:
+		var mine_won := winner == user_team_id
+		var opp := away if home == user_team_id else home
+		var my_goals := hg if home == user_team_id else ag
+		var their_goals := ag if home == user_team_id else hg
+		var suffix := "" if ot == "" else " (%s)" % ot
+		add_message("%s %d-%d vs %s%s" % ["Win" if mine_won else "Loss", my_goals, their_goals,
+			League.get_team(opp).full_name(), suffix],
+			"Record: %s. Open Schedule to see the box score." % record_string(user_team_id))
+
+
+func _add_stats(res: Dictionary, skaters: Dictionary, goalies: Dictionary) -> void:
 	for pid in res["stats"]:
 		var line: Dictionary = res["stats"][pid]
 		var key := str(pid)
-		if not skater_stats.has(key):
-			skater_stats[key] = {"gp": 0, "g": 0, "a": 0, "pts": 0, "shots": 0, "pim": 0, "pm": 0,
+		if not skaters.has(key):
+			skaters[key] = {"gp": 0, "g": 0, "a": 0, "pts": 0, "shots": 0, "pim": 0, "pm": 0,
 				"toi": 0, "ppg": 0, "shg": 0}
-		var s: Dictionary = skater_stats[key]
+		var s: Dictionary = skaters[key]
 		s["gp"] += 1
 		for k in ["g", "a", "shots", "pim", "pm", "toi", "ppg", "shg"]:
 			s[k] += line[k]
 		s["pts"] = s["g"] + s["a"]
-
 	for pid in res["goalies"]:
 		var line: Dictionary = res["goalies"][pid]
 		var key := str(pid)
-		if not goalie_season.has(key):
-			goalie_season[key] = {"gp": 0, "w": 0, "l": 0, "otl": 0, "sa": 0, "ga": 0, "so": 0, "toi": 0}
-		var s: Dictionary = goalie_season[key]
+		if not goalies.has(key):
+			goalies[key] = {"gp": 0, "w": 0, "l": 0, "otl": 0, "sa": 0, "ga": 0, "so": 0, "toi": 0}
+		var s: Dictionary = goalies[key]
 		s["gp"] += 1
 		s["sa"] += line["sa"]
 		s["ga"] += line["ga"]
@@ -265,21 +356,9 @@ func _apply_result(res: Dictionary) -> void:
 		if line["ga"] == 0 and line["decision"] == "W":
 			s["so"] += 1
 
-	_update_players(res, winner)
-
-	if home == user_team_id or away == user_team_id:
-		var mine_won := winner == user_team_id
-		var opp := away if home == user_team_id else home
-		var my_goals := hg if home == user_team_id else ag
-		var their_goals := ag if home == user_team_id else hg
-		var suffix := "" if ot == "" else " (%s)" % ot
-		add_message("%s %d-%d vs %s%s" % ["Win" if mine_won else "Loss", my_goals, their_goals,
-			League.get_team(opp).full_name(), suffix],
-			"Record: %s. Open Schedule to see the box score." % record_string(user_team_id))
-
 
 ## Form, condition and morale after a game.
-func _update_players(res: Dictionary, winner: String) -> void:
+func _update_players(res: Dictionary, winner: String, skaters: Dictionary, goalies: Dictionary) -> void:
 	var played := {}
 	for group in ["stats", "goalies"]:
 		for pid in res[group]:
@@ -292,7 +371,7 @@ func _update_players(res: Dictionary, winner: String) -> void:
 			if f.size() > 5:
 				f.pop_front()
 			form[key] = f
-			var season_line: Dictionary = skater_stats.get(key, goalie_season.get(key, {}))
+			var season_line: Dictionary = skaters.get(key, goalies.get(key, {}))
 			season_line["rsum"] = season_line.get("rsum", 0.0) + rating
 			season_line["rn"] = season_line.get("rn", 0) + 1
 			var drain: float = 9.0 if group == "goalies" else float(line["toi"]) / 60.0 * 0.55
@@ -307,7 +386,7 @@ func _update_players(res: Dictionary, winner: String) -> void:
 			morale[key] = clampi(m, 5, 100)
 	# Regulars left out of the lineup get frustrated.
 	for t in [res["home"], res["away"]]:
-		var r := League.roster(t)
+		var r := League.nhl_roster(t)
 		for idx in mini(18, r.size()):
 			var key := str(r[idx].id)
 			if not played.has(key) and not r[idx].is_goalie():
@@ -333,42 +412,6 @@ func _record_ranks() -> void:
 		rank += 1
 
 
-func condition_of(pid: int) -> float:
-	return float(condition.get(str(pid), 100.0))
-
-
-func morale_of(pid: int) -> int:
-	return int(morale.get(str(pid), 65))
-
-
-func form_of(pid: int) -> Array:
-	return form.get(str(pid), [])
-
-
-## Season average match rating, or 0 if he hasn't played.
-func avg_rating(pid: int) -> float:
-	var line := player_line(pid)
-	var n: int = line.get("rn", 0)
-	return float(line.get("rsum", 0.0)) / n if n > 0 else 0.0
-
-
-## Key Player / Important Player / Regular / Rotation / Depth / Prospect.
-func squad_status(p) -> String:
-	var r := League.roster(p.team_id)
-	var rank := r.find(p)
-	if p.age <= 21 and rank >= 9:
-		return "Prospect"
-	if rank < 3:
-		return "Key Player"
-	if rank < 8:
-		return "Important Player"
-	if rank < 15:
-		return "Regular Starter"
-	if rank < 20:
-		return "Rotation"
-	return "Depth"
-
-
 func _streak(current: String, outcome: String) -> String:
 	var letter := outcome if outcome != "O" else "OT"
 	if current.begins_with(letter) and (letter != "L" or not current.begins_with("OT")):
@@ -377,17 +420,218 @@ func _streak(current: String, outcome: String) -> String:
 	return "%s1" % letter
 
 
-func _on_season_over() -> void:
+func _on_regular_season_over() -> void:
 	var conf: String = League.get_team(user_team_id).conference
 	var rank := 1
 	for r in standings_sorted(func(t): return t.conference == conf):
 		if r["team"] == user_team_id:
 			break
 		rank += 1
+	awards = Awards.regular_season(self)
+	_start_playoffs()
+	var made_it := not user_series().is_empty()
 	add_message("Regular season complete",
-		"You finished %s with %d points, %s in the %s Conference. Playoffs arrive in phase 2." % [
-			record_string(user_team_id), standings[user_team_id]["pts"], ordinal(rank), conf])
+		"You finished %s with %d points, %s in the %s Conference. %s" % [
+			record_string(user_team_id), standings[user_team_id]["pts"], ordinal(rank), conf,
+			"You're in the playoffs! Check League > Playoffs for the bracket." if made_it
+			else "You missed the playoffs. Continue to follow the race for the Stanton Cup."])
 	season_finished.emit()
+
+
+# ------------------------------------------------------------------ playoffs
+
+## Top 3 in each division + 2 wild cards per conference.
+func playoff_teams() -> Dictionary:
+	var spots := {}
+	for conf in ["Eastern", "Western"]:
+		var taken := {}
+		var divs := []
+		for t in League.teams.values():
+			if t.conference == conf and not divs.has(t.division):
+				divs.append(t.division)
+		for d in divs:
+			var rows: Array = standings_sorted(func(t): return t.division == d)
+			for r in rows.slice(0, 3):
+				taken[r["team"]] = true
+		var wild := 0
+		for r in standings_sorted(func(t): return t.conference == conf):
+			if wild >= 2:
+				break
+			if not taken.has(r["team"]):
+				taken[r["team"]] = true
+				wild += 1
+		spots.merge(taken)
+	return spots
+
+
+func _league_rank() -> Dictionary:
+	var rank := {}
+	var i := 1
+	for r in standings_sorted():
+		rank[r["team"]] = i
+		i += 1
+	return rank
+
+
+func _start_playoffs() -> void:
+	phase = "playoffs"
+	playoffs = {"series": [], "games": [], "round": 1, "next_day": day + 3, "champion": "", "finalist": ""}
+	for conf in ["Eastern", "Western"]:
+		var divs := []
+		for t in League.team_list():
+			if t.conference == conf and not divs.has(t.division):
+				divs.append(t.division)
+		var tops := {}
+		var taken := {}
+		for d in divs:
+			var rows: Array = standings_sorted(func(t): return t.division == d)
+			tops[d] = rows.slice(0, 3).map(func(r): return r["team"])
+			for team in tops[d]:
+				taken[team] = true
+		var wild := []
+		for r in standings_sorted(func(t): return t.conference == conf):
+			if wild.size() >= 2:
+				break
+			if not taken.has(r["team"]):
+				wild.append(r["team"])
+		# The better division winner plays the second wild card.
+		var rank := _league_rank()
+		divs.sort_custom(func(a, b): return rank[tops[a][0]] < rank[tops[b][0]])
+		var slot := 0
+		for k in divs.size():
+			var d: String = divs[k]
+			var wc: String = wild[1] if k == 0 else wild[0]
+			_add_series(1, conf, slot, tops[d][0], wc)
+			_add_series(1, conf, slot + 1, tops[d][1], tops[d][2])
+			slot += 2
+	var mine := user_series()
+	if not mine.is_empty():
+		var opp: String = mine["low"] if mine["high"] == user_team_id else mine["high"]
+		add_message("Playoffs: First Round vs %s" % UI.team_name(opp),
+			"Best of seven. %s have home ice." % League.get_team(mine["high"]).name)
+
+
+func _add_series(rnd: int, conf: String, slot: int, a: String, b: String) -> void:
+	var rank := _league_rank()
+	var high := a if rank[a] < rank[b] else b
+	var low := b if high == a else a
+	playoffs["series"].append({"id": playoffs["series"].size(), "round": rnd, "conf": conf, "slot": slot,
+		"high": high, "low": low, "w_high": 0, "w_low": 0, "winner": "", "games": []})
+
+
+func series_in_round(rnd: int) -> Array:
+	return playoffs.get("series", []).filter(func(s): return s["round"] == rnd)
+
+
+## True when you missed the playoffs or have been eliminated.
+func user_out() -> bool:
+	var s := user_series()
+	return s.is_empty() or (s["winner"] != "" and s["winner"] != user_team_id)
+
+
+## Your current (or last) series, or {} if you missed the playoffs.
+func user_series() -> Dictionary:
+	var found := {}
+	for s in playoffs.get("series", []):
+		if s["high"] == user_team_id or s["low"] == user_team_id:
+			found = s
+	return found
+
+
+func _sim_playoff_day() -> Array:
+	var game_day: int = playoffs["next_day"]
+	_recover(game_day)
+	var mine := []
+	for s in series_in_round(playoffs["round"]):
+		if s["winner"] != "":
+			continue
+		var n: int = s["w_high"] + s["w_low"] + 1
+		var home: String = s["high"] if n in [1, 2, 5, 7] else s["low"]
+		var away: String = s["low"] if home == s["high"] else s["high"]
+		var idx: int = playoffs["games"].size()
+		var res := _simulate(home, away, hash([world_seed, "playoffs", idx]), true)
+		var hg: int = res["home_goals"]
+		var ag: int = res["away_goals"]
+		var winner := home if hg > ag else away
+		playoffs["games"].append({"day": game_day, "home": home, "away": away, "hg": hg, "ag": ag,
+			"ot": res["ot"], "series": s["id"], "game": n})
+		s["games"].append(idx)
+		if winner == s["high"]:
+			s["w_high"] += 1
+		else:
+			s["w_low"] += 1
+		_add_stats(res, playoff_skaters, playoff_goalies)
+		_update_players(res, winner, playoff_skaters, playoff_goalies)
+		var involved: bool = home == user_team_id or away == user_team_id
+		if involved:
+			var key := "p%d" % idx
+			box_scores[key] = res
+			mine.append(key)
+		if s["w_high"] == 4 or s["w_low"] == 4:
+			s["winner"] = s["high"] if s["w_high"] == 4 else s["low"]
+			_on_series_won(s)
+	day = game_day + 1
+	playoffs["next_day"] = game_day + 2
+	# Round over?
+	var open := series_in_round(playoffs["round"]).filter(func(x): return x["winner"] == "")
+	if open.is_empty():
+		_next_round()
+	day_advanced.emit()
+	return mine
+
+
+func _on_series_won(s: Dictionary) -> void:
+	var loser: String = s["low"] if s["winner"] == s["high"] else s["high"]
+	var score := "%d-%d" % [maxi(s["w_high"], s["w_low"]), mini(s["w_high"], s["w_low"])]
+	var rname: String = ROUND_NAMES[s["round"] - 1]
+	if s["winner"] == user_team_id:
+		add_message("Series won! %s %s" % [rname, score],
+			"You beat the %s %s. On to the next round." % [League.get_team(loser).full_name(), score])
+	elif loser == user_team_id:
+		add_message("Eliminated in the %s" % rname,
+			"The %s beat you %s. Continue to follow the rest of the playoffs." % [League.get_team(s["winner"]).full_name(), score])
+
+
+func _next_round() -> void:
+	var rnd: int = playoffs["round"]
+	var done := series_in_round(rnd)
+	if rnd == 4:
+		var final: Dictionary = done[0]
+		playoffs["champion"] = final["winner"]
+		playoffs["finalist"] = final["low"] if final["winner"] == final["high"] else final["high"]
+		_finish_season()
+		return
+	playoffs["round"] = rnd + 1
+	playoffs["next_day"] = playoffs["next_day"] + 1
+	if rnd < 3:
+		for conf in ["Eastern", "Western"]:
+			var prev := done.filter(func(s): return s["conf"] == conf)
+			prev.sort_custom(func(a, b): return a["slot"] < b["slot"])
+			for k in range(0, prev.size(), 2):
+				_add_series(rnd + 1, conf, k / 2, prev[k]["winner"], prev[k + 1]["winner"])
+	else:
+		var east: Dictionary = done.filter(func(s): return s["conf"] == "Eastern")[0]
+		var west: Dictionary = done.filter(func(s): return s["conf"] == "Western")[0]
+		_add_series(4, "Final", 0, east["winner"], west["winner"])
+	var mine := user_series()
+	if not mine.is_empty() and mine["round"] == rnd + 1:
+		var opp: String = mine["low"] if mine["high"] == user_team_id else mine["high"]
+		add_message("%s vs %s" % [ROUND_NAMES[rnd], UI.team_name(opp)], "Best of seven. Good luck.")
+
+
+func _finish_season() -> void:
+	phase = "done"
+	awards.append_array(Awards.postseason(self))
+	var champ: String = playoffs["champion"]
+	if champ == user_team_id:
+		add_message("STANTON CUP CHAMPIONS!",
+			"The %s are champions! You took over the club and won it all. Check League > Awards for the season's honors." % League.get_team(champ).full_name())
+	else:
+		add_message("The %s win the Stanton Cup" % League.get_team(champ).full_name(),
+			"They beat the %s in the final. Check League > Awards for the season's honors." % League.get_team(playoffs["finalist"]).full_name())
+	for a in awards:
+		if a.get("team", "") == user_team_id:
+			add_message("%s: %s" % [a["name"], a.get("winner_name", "")], a["desc"])
 
 
 # ------------------------------------------------------------------ queries
@@ -427,6 +671,44 @@ func player_line(pid: int) -> Dictionary:
 	return {}
 
 
+func condition_of(pid: int) -> float:
+	return float(condition.get(str(pid), 100.0))
+
+
+func morale_of(pid: int) -> int:
+	return int(morale.get(str(pid), 65))
+
+
+func form_of(pid: int) -> Array:
+	return form.get(str(pid), [])
+
+
+## Season average match rating, or 0 if he hasn't played.
+func avg_rating(pid: int) -> float:
+	var line := player_line(pid)
+	var n: int = line.get("rn", 0)
+	return float(line.get("rsum", 0.0)) / n if n > 0 else 0.0
+
+
+## Key Player / Important Player / Regular / Rotation / Depth / Prospect.
+func squad_status(p) -> String:
+	if not p.on_nhl_roster():
+		return "Reserve"
+	var r := League.roster(p.team_id)
+	var rank := r.find(p)
+	if p.age <= 21 and rank >= 9:
+		return "Prospect"
+	if rank < 3:
+		return "Key Player"
+	if rank < 8:
+		return "Important Player"
+	if rank < 15:
+		return "Regular Starter"
+	if rank < 20:
+		return "Rotation"
+	return "Depth"
+
+
 # ------------------------------------------------------------------ save / load
 
 func has_save() -> bool:
@@ -435,11 +717,13 @@ func has_save() -> bool:
 
 func save_game() -> bool:
 	var data := {
-		"version": 1,
+		"version": 2,
 		"league": League.to_dict(),
-		"user_team_id": user_team_id, "seed": world_seed, "day": day,
+		"user_team_id": user_team_id, "seed": world_seed, "day": day, "phase": phase,
 		"schedule": schedule, "box_scores": box_scores, "standings": standings,
-		"skater_stats": skater_stats, "goalie_season": goalie_season, "inbox": inbox,
+		"skater_stats": skater_stats, "goalie_season": goalie_season,
+		"playoff_skaters": playoff_skaters, "playoff_goalies": playoff_goalies,
+		"playoffs": playoffs, "awards": awards, "inbox": inbox,
 		"form": form, "morale": morale, "condition": condition, "rank_history": rank_history,
 		"last_sim_day": last_sim_day,
 		"lineups": _map_values(lineups, func(l): return l.to_dict()),
@@ -463,11 +747,16 @@ func load_game() -> bool:
 	user_team_id = data["user_team_id"]
 	world_seed = int(data["seed"])
 	day = int(data["day"])
+	phase = data.get("phase", "regular")
 	schedule = _intify(data["schedule"])
 	box_scores = _intify(data["box_scores"])
 	standings = _intify(data["standings"])
 	skater_stats = _intify(data["skater_stats"])
 	goalie_season = _intify(data["goalie_season"])
+	playoff_skaters = _intify(data.get("playoff_skaters", {}))
+	playoff_goalies = _intify(data.get("playoff_goalies", {}))
+	playoffs = _intify(data.get("playoffs", {}))
+	awards = _intify(data.get("awards", []))
 	inbox = _intify(data["inbox"])
 	form = data.get("form", {})
 	morale = _intify(data.get("morale", {}))

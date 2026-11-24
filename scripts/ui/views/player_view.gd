@@ -100,6 +100,15 @@ func _header() -> Control:
 	ability.add_child(UI.label("Overall %d" % p.overall, 13, AppTheme.ovr_color(p.overall)))
 	ability.add_child(UI.label("Range %s" % p.potential_range(), 13, AppTheme.MUTED))
 
+	# Roster move (your players only).
+	if p.team_id == Game.user_team_id:
+		var move := UI.button("Send to Reserve" if p.on_nhl_roster() else "Call Up to NHL", func():
+			Game.set_roster_status(p.id, "Reserve" if p.on_nhl_roster() else "NHL")
+			if Hub.current != null:
+				Hub.current.refresh())
+		move.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(move)
+
 	# Previous / next player on the same roster.
 	var nav := UI.vbox(4)
 	nav.size_flags_vertical = Control.SIZE_SHRINK_CENTER

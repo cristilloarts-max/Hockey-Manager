@@ -11,7 +11,7 @@ const SECTIONS := {
 	"HOME": ["Overview", "Inbox"],
 	"SQUAD": ["Players", "Lines", "Contracts"],
 	"TACTICS": ["Tactics"],
-	"LEAGUE": ["Schedule", "Standings", "Stats"],
+	"LEAGUE": ["Schedule", "Standings", "Stats", "Playoffs", "Awards"],
 }
 ## Pages that belong to a section without having their own sub-tab.
 const PAGE_SECTION := {"Player": "SQUAD", "Club": "LEAGUE"}
@@ -186,6 +186,10 @@ func _show_page() -> void:
 			_view = StandingsView.new()
 		"Stats":
 			_view = StatsView.new()
+		"Playoffs":
+			_view = PlayoffsView.new()
+		"Awards":
+			_view = AwardsView.new()
 		_:
 			_view = ClubView.new()
 	UI.expand(_view)
@@ -219,24 +223,38 @@ func _refresh_bar() -> void:
 	var r: Dictionary = Game.standings[team_id]
 	_record_label.text = "%s   %s   %d pts" % [League.get_team(team_id).full_name(), Game.record_string(team_id), r["pts"]]
 	if Game.is_season_over():
+		var champ: String = Game.playoffs.get("champion", "")
 		_date_label.text = "Season complete"
-		_next_label.text = "Playoffs arrive in phase 2"
+		_next_label.text = "%s won the Stanton Cup" % League.get_team(champ).name if champ != "" else ""
 		_continue_btn.disabled = true
+		_continue_btn.text = "Season Over"
 		return
 	_date_label.text = Game.date_string()
-	var nxt := Game.next_game_index(team_id)
-	if nxt >= 0:
-		var g: Dictionary = Game.schedule[nxt]
-		var home: bool = g["home"] == team_id
-		var opp: String = g["away"] if home else g["home"]
-		var days: int = g["day"] - Game.day
+	_continue_btn.text = "Continue   >>"
+	var info := Game.next_game_info()
+	if not info.is_empty():
+		var home: bool = info["home"] == team_id
+		var opp: String = info["away"] if home else info["home"]
+		var days: int = info["day"] - Game.day
 		var when := "today" if days <= 0 else ("tomorrow" if days == 1 else "in %d days" % days)
-		_next_label.text = "%s %s %s" % ["vs" if home else "@", League.get_team(opp).name, when]
+		var label: String = info["label"]
+		_next_label.text = "%s%s %s %s" % [label + ": " if label != "" else "", "vs" if home else "@", League.get_team(opp).name, when]
+	elif Game.phase == "playoffs":
+		_next_label.text = "Playoffs: %s" % Game.ROUND_NAMES[Game.playoffs["round"] - 1]
+		_continue_btn.text = "Sim Round   >>"
 
 
 # ------------------------------------------------------------------ actions
 
 func _on_continue() -> void:
+	var roster_issues := Game.roster_problems(Game.user_team_id)
+	if not roster_issues.is_empty() and Game.phase != "done":
+		var stop := AcceptDialog.new()
+		stop.title = "Fix your roster first"
+		stop.dialog_text = "\n".join(roster_issues) + "\n\nUse Squad > Players to call players up or send them to the reserve list."
+		add_child(stop)
+		stop.popup_centered()
+		return
 	var lineup: Lineup = Game.lineups[Game.user_team_id]
 	var problems := lineup.problems()
 	if not problems.is_empty():

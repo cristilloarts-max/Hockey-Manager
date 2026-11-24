@@ -10,6 +10,37 @@ See [docs/GAME_DESIGN.md](docs/GAME_DESIGN.md) for the full design and roadmap.
 2. In the Project Manager, choose **Import** and select `project.godot` in this folder.
 3. Press **F5** (Run Project).
 
+## Phase 2: real rosters, roster rules, playoffs and awards
+
+- **Ratings from four seasons of career data.**
+  - The current 2026-27 season counts most, then 2025-26, 2024-25 and 2023-24, each weighted by games played.
+  - Prospects are rated from their junior, college, AHL and European production, converted to NHL-equivalent scoring (NHLe).
+- **Rosters and lines as teams use them right now.**
+  - Current rosters, with each team's lines, PP units, PK units and goalie split taken from this season's real ice time.
+  - Extra players start on the reserve list.
+- **Roster and cap rules.**
+  - A maximum of 23 players on the NHL roster, at least 20, and two goalies.
+  - Reserve players count against the cap only above the burial allowance.
+  - Continue is blocked until your roster is legal.
+  - Use **Call Up** / **Send to Reserve** on the Players page or the player profile.
+- **Lines: drag and drop.**
+  - Drag a player from the squad table onto a jersey, or drag one jersey onto another to swap them.
+  - Drop a jersey on the table to take him out of the lineup.
+  - Clicking a jersey still opens the player list.
+  - Set how often your starting goalie plays.
+- **Realistic stats.**
+  - Each player shoots, scores and sets up goals at rates based on his real per-60 numbers, blended with his ratings.
+  - The goalie split follows each team's real starts.
+  - Calibrated over full seasons: about 6.1 goals per game, a .900 save %, 19% on the power play, a few 100-point players, 40-goal leaders around 45-54, starting goalies around 65-72 games, and standings from about 60 to 120 points.
+- **Playoffs.**
+  - 16 teams: the top 3 in each division plus 2 wild cards per conference.
+  - Best-of-seven series with 2-2-1-1-1 home ice and playoff overtime.
+  - A bracket page and separate playoff stats.
+- **Champion and awards.**
+  - Team awards: the Stanton Cup, the conference trophies (Wallace Trophy, Campton Bowl), the Presidents' Shield, the Jenning Trophy and the Jack Addams Award (coach of the year; it can be you).
+  - Player awards: the Hartwell (MVP), Art Rose (points), Rocket Richter (goals), Norrison (defenseman), Vezino (goalie), Caldor (rookie), Selkirk (defensive forward) and Conn Smith (playoff MVP).
+  - During the season, the Awards page shows the live races.
+
 ## Look and feel
 
 - **Dark navy theme, team colors everywhere.**

@@ -320,3 +320,14 @@ These carry over from the brainstorm:
 | 7 | Set play creator and playbook |
 
 Tactics data structures are defined in phase 1, so the sim reads them from the start, even before the full tactics screens exist.
+
+### Progress
+- **Phase 1:** done.
+- **Visual overhaul:** done.
+- **Phase 2:** done.
+  - real career-weighted ratings and current deployments
+  - roster and cap rules
+  - drag-and-drop lines
+  - stat calibration
+  - playoffs, champion and awards
+- **Next:** the set play creator (section 3), then trades.

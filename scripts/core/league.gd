@@ -71,10 +71,35 @@ func roster(team_id: String) -> Array:
 	return list
 
 
+## Players on the NHL roster (dressable, counted against the 23-man limit).
+func nhl_roster(team_id: String) -> Array:
+	return roster(team_id).filter(func(p): return p.on_nhl_roster())
+
+
+## Starting lineup: the team's real depth chart, gaps filled by auto-pick.
+func default_lineup(team_id: String) -> Lineup:
+	var t := get_team(team_id)
+	var l: Lineup
+	if t != null and not t.depth_chart.is_empty():
+		l = Lineup.from_dict(t.depth_chart)
+	else:
+		l = Lineup.new()
+	var eligible := nhl_roster(team_id)
+	l.drop_ineligible(eligible)
+	l.auto_fill(eligible, true)
+	return l
+
+
+## Cap hit that counts this season: NHL-roster players in full; reserve players
+## only for the part of their cap hit above the burial allowance.
 func payroll(team_id: String) -> int:
 	var total := 0
+	var bury: int = finances.get("bury_allowance", 1_150_000)
 	for p in roster(team_id):
-		total += p.cap_hit()
+		if p.on_nhl_roster():
+			total += p.cap_hit()
+		else:
+			total += maxi(0, p.cap_hit() - bury)
 	return total
 
 
@@ -105,8 +130,7 @@ func compute_norms() -> void:
 	var goalie_sum := 0.0
 	var goalie_n := 0
 	for team_id in teams:
-		var lineup := Lineup.new()
-		lineup.auto_fill(roster(team_id))
+		var lineup := default_lineup(team_id)
 		for line in lineup.forwards:
 			for s in 3:
 				var p := get_player(line[s])
@@ -116,7 +140,7 @@ func compute_norms() -> void:
 				att += MatchSim.skater_attack(p, spot)
 				dfn += MatchSim.skater_defense(p, spot)
 				n += 1
-				var w := pow(p.attr("shooting"), 2)
+				var w := pow(p.shots60(), MatchSim.SHOT_WEIGHT_EXP)
 				shoot_sum += MatchSim.shooting_value(p, spot) * w
 				shoot_w += w
 		for pair in lineup.defense:
@@ -128,7 +152,7 @@ func compute_norms() -> void:
 				att += MatchSim.skater_attack(p, spot)
 				dfn += MatchSim.skater_defense(p, spot)
 				n += 1
-				var w := pow(p.attr("shooting"), 2) * 0.55
+				var w := pow(p.shots60(), MatchSim.SHOT_WEIGHT_EXP)
 				shoot_sum += MatchSim.shooting_value(p, spot) * w
 				shoot_w += w
 		var g := get_player(lineup.goalies[0])

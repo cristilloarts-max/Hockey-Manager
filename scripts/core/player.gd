@@ -51,6 +51,9 @@ var potential: int = 50
 var attributes: Dictionary = {}    ## core ratings the sim reads, name -> 1..20
 var details: Dictionary = {}       ## detailed attributes shown in the game, name -> 1..20
 var contract: Dictionary = {}      ## cap_hit, years, elc, expiry_status, no_trade_clause
+var tendencies: Dictionary = {}    ## shots60, a60, sh_pct from real data (sim)
+var roster_status := "NHL"         ## "NHL" (counts vs 23-man roster + cap) or "Reserve"
+var season_gp := 0                 ## real games played this season before the game started
 
 
 static func from_dict(d: Dictionary) -> Player:
@@ -80,6 +83,11 @@ static func from_dict(d: Dictionary) -> Player:
 	p.prefers_off_side = bool(pos.get("prefers_off_side", false))
 	for k in pos["familiarity"]:
 		p.familiarity[k] = int(pos["familiarity"][k])
+	var tend: Dictionary = d.get("tendencies", {})
+	for k in tend:
+		p.tendencies[k] = float(tend[k])
+	p.roster_status = d.get("roster_status", "NHL")
+	p.season_gp = int(d.get("season_gp", 0))
 	var c: Dictionary = d["contract"]
 	p.contract = {
 		"cap_hit": int(c["cap_hit"]),
@@ -102,6 +110,7 @@ func to_dict() -> Dictionary:
 		"positions": {"preferred": position, "comfortable": comfortable,
 			"prefers_off_side": prefers_off_side, "familiarity": familiarity},
 		"contract": contract,
+		"tendencies": tendencies, "roster_status": roster_status, "season_gp": season_gp,
 	}
 
 
@@ -163,6 +172,30 @@ func height_text() -> String:
 		return "-"
 	var inches := int(round(height_cm / 2.54))
 	return "%d cm (%d'%d\")" % [height_cm, inches / 12, inches % 12]
+
+
+# Sim tendencies (fall back to ratings for players without real minutes).
+
+func shots60() -> float:
+	if tendencies.has("shots60"):
+		return tendencies["shots60"]
+	return (4.6 if is_defense() else 7.2) * pow(attr("shooting") / 11.0, 1.2)
+
+
+func a60() -> float:
+	if tendencies.has("a60"):
+		return tendencies["a60"]
+	return (1.0 if is_defense() else 1.45) * pow(attr("passing") / 11.0, 1.2)
+
+
+func sh_pct() -> float:
+	if tendencies.has("sh_pct"):
+		return tendencies["sh_pct"]
+	return (0.05 if is_defense() else 0.115) * pow(attr("shooting") / 11.0, 0.8)
+
+
+func on_nhl_roster() -> bool:
+	return roster_status == "NHL"
 
 
 func familiarity_at(spot: String) -> int:

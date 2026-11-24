@@ -3,8 +3,9 @@ extends AcceptDialog
 ## Box score + play-by-play for one of your games.
 
 
-static func open(parent: Node, schedule_index: int) -> void:
-	var key := str(schedule_index)
+## key: schedule index (regular season) or "p<n>" (playoffs).
+static func open(parent: Node, key_or_index: Variant) -> void:
+	var key := str(key_or_index)
 	if not Game.box_scores.has(key):
 		return
 	var w := BoxScoreWindow.new()

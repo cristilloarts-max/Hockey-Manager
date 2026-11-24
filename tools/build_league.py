@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Build data/league.json for the game from public NHL data.
 
-Pulls current rosters (2026-27) and the last two regular seasons of stats,
-turns stats into 1-20 attributes, generates contracts, and replaces every
-real team and player name with a spoofed one.
+Pulls current rosters (2026-27), every player's career page, the current
+season's ice-time usage and "realtime" stats; turns them into 1-20 attributes
+(weighted toward the current season), builds each team's lines the way they
+are deployed right now, generates contracts, and replaces every real team and
+player name with a spoofed one.
 
 Usage:  python3 tools/build_league.py            (uses cached responses if present)
         python3 tools/build_league.py --refresh  (re-downloads everything)
@@ -27,7 +29,13 @@ API = "https://api-web.nhle.com/v1"
 STATS_API = "https://api.nhle.com/stats/rest/en"
 
 SEASON_LABEL = "2026-27"
-STAT_SEASONS = [("20252026", 0.65), ("20242025", 0.35)]  # (season, weight)
+CURRENT_SEASON = "20262027"
+# Season weights (applied per game played, so a season counts by weight x games).
+STAT_SEASONS = [("20262027", 1.0), ("20252026", 0.8), ("20242025", 0.5), ("20232024", 0.3)]
+# NHL-equivalency factors: points per game elsewhere x factor ~ NHL points per game.
+NHLE = {"KHL": 0.77, "SHL": 0.57, "NL": 0.46, "Liiga": 0.44, "Czechia": 0.44, "DEL": 0.39,
+        "AHL": 0.38, "Allsvenskan": 0.30, "NCAA": 0.19, "OHL": 0.14, "WHL": 0.14,
+        "QMJHL": 0.12, "USHL": 0.11, "Slovakia": 0.27, "ICEHL": 0.30}
 SEASON_START = date(2026, 10, 1)
 
 # League finances (2026-27)
@@ -194,6 +202,104 @@ def position_profile(pos: str, shoots: str, attrs: dict, rng: random.Random) -> 
     return {"preferred": pref, "comfortable": comfortable, "prefers_off_side": prefers_off, "familiarity": fam}
 
 
+# ---------------------------------------------------------------- sim tendencies
+# League-wide per-60 baselines (all situations) used as priors.
+PRIOR = {"F": {"shots60": 7.2, "a60": 1.45, "sh": 0.115}, "D": {"shots60": 4.6, "a60": 1.0, "sh": 0.05}}
+
+
+def tendencies(pid: int, pos: str, attrs: dict, s: dict | None) -> dict:
+    """Real per-60 shot and assist rates and shooting % (regressed toward the
+    position average). Players without NHL minutes get rating-based values."""
+    if pos == "G":
+        return {}
+    grp = "D" if pos == "D" else "F"
+    pr = PRIOR[grp]
+    sh_rating = (attrs["shooting"] / 11.0)
+    if not s or s.get("toi_x_gp", 0) <= 0:
+        return {"shots60": round(pr["shots60"] * sh_rating ** 1.2, 2),
+                "a60": round(pr["a60"] * (attrs["passing"] / 11.0) ** 1.2, 2),
+                "sh_pct": round(pr["sh"] * sh_rating ** 0.8, 4)}
+    hours = s["toi_x_gp"] / 3600.0
+    prior_h = 6.0
+    return {
+        "shots60": round((s["shots"] + pr["shots60"] * prior_h) / (hours + prior_h), 2),
+        "a60": round((s["a"] + pr["a60"] * prior_h) / (hours + prior_h), 2),
+        "sh_pct": round((s["g"] + pr["sh"] * 90) / (s["shots"] + 90), 4),
+    }
+
+
+def build_depth_chart(roster: list) -> dict:
+    """Lines the way the team deploys them this season: forwards and D ordered
+    by even-strength ice time, PP/PK units by special-teams time, goalies by starts."""
+    def score(pl, kind="es"):
+        u = pl["_usage"]
+        gp = u.get("gp", 0)
+        trust = min(1.0, gp / 5.0)
+        return u.get(kind, 0) * trust + pl["overall"] * (8 if kind == "es" else 1.2) * (1 - trust)
+
+    fwds = sorted([p for p in roster if p["position"] in ("C", "LW", "RW") and p["roster_status"] == "NHL"],
+                  key=score, reverse=True)[:12]
+    dmen = sorted([p for p in roster if p["position"] in ("LD", "RD") and p["roster_status"] == "NHL"],
+                  key=score, reverse=True)[:6]
+    goalies = sorted([p for p in roster if p["position"] == "G" and p["roster_status"] == "NHL"],
+                     key=lambda p: (p["_cur_gs"], p["overall"]), reverse=True)[:2]
+
+    centers = [p for p in fwds if p["position"] == "C"][:4]
+    if len(centers) < 4:
+        extra = sorted([p for p in fwds if p not in centers],
+                       key=lambda p: p["positions"]["familiarity"]["C"], reverse=True)
+        centers += extra[:4 - len(centers)]
+    centers.sort(key=score, reverse=True)
+    wingers = [p for p in fwds if p not in centers]
+    lines = []
+    for i in range(4):
+        pair = wingers[i * 2:i * 2 + 2]
+        lw = rw = None
+        for w in pair:
+            if w["position"] == "LW" and lw is None:
+                lw = w
+            elif w["position"] == "RW" and rw is None:
+                rw = w
+        rest = [w for w in pair if w is not lw and w is not rw]
+        for w in rest:
+            if lw is None:
+                lw = w
+            elif rw is None:
+                rw = w
+        c = centers[i] if i < len(centers) else None
+        lines.append([lw["id"] if lw else 0, c["id"] if c else 0, rw["id"] if rw else 0])
+    pairs = []
+    for i in range(3):
+        two = dmen[i * 2:i * 2 + 2]
+        ld = next((d for d in two if d["position"] == "LD"), None)
+        rd = next((d for d in two if d["position"] == "RD" and d is not ld), None)
+        for d in two:
+            if d is not ld and d is not rd:
+                if ld is None:
+                    ld = d
+                else:
+                    rd = d
+        pairs.append([ld["id"] if ld else 0, rd["id"] if rd else 0])
+
+    def units(kind, n_f, n_d):
+        f = sorted(fwds, key=lambda p: score(p, kind), reverse=True)
+        d = sorted(dmen, key=lambda p: score(p, kind), reverse=True)
+        out = []
+        for u in range(2):
+            ids = [p["id"] for p in f[u * n_f:(u + 1) * n_f]] + [p["id"] for p in d[u * n_d:(u + 1) * n_d]]
+            out.append(ids + [0] * (n_f + n_d - len(ids)))
+        return out
+
+    team_gp = max(1, sum(g["_cur_gs"] for g in goalies))
+    share = (goalies[0]["_cur_gs"] / team_gp) if goalies and goalies[0]["_cur_gs"] > 0 else 0.72
+    return {
+        "forwards": lines, "defense": pairs,
+        "goalies": [g["id"] for g in goalies] + [0] * (2 - len(goalies)),
+        "power_play": units("pp", 3, 2), "penalty_kill": units("sh", 2, 2),
+        "starter_share": round(min(0.85, max(0.5, share)), 2),
+    }
+
+
 # ---------------------------------------------------------------- main build
 def main():
     refresh = "--refresh" in sys.argv
@@ -201,33 +307,77 @@ def main():
     standings = fetch("standings/now", refresh)["standings"]
     div_of = {t["teamAbbrev"]["default"]: (t["conferenceName"], t["divisionName"]) for t in standings}
 
-    # Weighted stat totals per player across seasons and teams (trades split rows).
+    # Current rosters.
+    roster_players = []
+    for abbr in TEAMS:
+        roster = fetch(f"roster/{abbr}/current", refresh)
+        for group in ("forwards", "defensemen", "goalies"):
+            for p in roster.get(group, []):
+                roster_players.append((abbr, p))
+
+    # Career pages: weighted NHL regular-season totals, plus NHL-equivalent
+    # scoring from other leagues for players without much NHL time.
+    weight_of = dict(STAT_SEASONS)
     skater_stats: dict[int, dict] = {}
     goalie_stats: dict[int, dict] = {}
-    for season, weight in STAT_SEASONS:
-        for abbr in TEAMS:
-            data = fetch(f"club-stats/{abbr}/{season}/2", refresh)
-            if not data:
+    nhle_ppg: dict[int, float] = {}
+    for n_done, (_, p) in enumerate(roster_players):
+        pid = p["id"]
+        landing = fetch(f"player/{pid}/landing", refresh, cache_name=f"player_{pid}") or {}
+        other_pts = other_gp = 0.0
+        career_gp = 0
+        for st in landing.get("seasonTotals", []):
+            season = str(st.get("season"))
+            gp = st.get("gamesPlayed") or 0
+            if st.get("gameTypeId") != 2 or gp == 0:
                 continue
-            for s in data.get("skaters", []):
-                acc = skater_stats.setdefault(s["playerId"], {})
-                gp = s.get("gamesPlayed", 0)
-                acc["nhl_gp"] = acc.get("nhl_gp", 0) + gp
-                for key, src in [("gp", "gamesPlayed"), ("g", "goals"), ("a", "assists"),
-                                 ("shots", "shots"), ("pim", "penaltyMinutes"), ("pm", "plusMinus"),
-                                 ("ppg", "powerPlayGoals"), ("shg", "shorthandedGoals")]:
-                    acc[key] = acc.get(key, 0) + weight * (s.get(src) or 0)
-                acc["toi_x_gp"] = acc.get("toi_x_gp", 0) + weight * gp * toi_seconds(s.get("avgTimeOnIcePerGame"))
-                fo = s.get("faceoffWinPctg") or 0
-                if fo > 0:
-                    acc["fo_x_gp"] = acc.get("fo_x_gp", 0) + weight * gp * fo
-                    acc["fo_gp"] = acc.get("fo_gp", 0) + weight * gp
-            for g in data.get("goalies", []):
-                acc = goalie_stats.setdefault(g["playerId"], {})
-                acc["nhl_gp"] = acc.get("nhl_gp", 0) + g.get("gamesPlayed", 0)
-                for key, src in [("gp", "gamesPlayed"), ("gs", "gamesStarted"), ("sa", "shotsAgainst"),
-                                 ("sv", "saves"), ("ga", "goalsAgainst"), ("w", "wins"), ("so", "shutouts")]:
-                    acc[key] = acc.get(key, 0) + weight * (g.get(src) or 0)
+            league = st.get("leagueAbbrev", "")
+            if league == "NHL":
+                career_gp += gp
+                if season == CURRENT_SEASON:
+                    p["_cur_gp"] = p.get("_cur_gp", 0) + gp
+                    p["_cur_gs"] = p.get("_cur_gs", 0) + (st.get("gamesStarted") or 0)
+                w = weight_of.get(season)
+                if not w:
+                    continue
+                if p["positionCode"] == "G":
+                    acc = goalie_stats.setdefault(pid, {})
+                    sa = st.get("shotsAgainst") or 0
+                    ga = st.get("goalsAgainst") or 0
+                    for key, val in [("gp", gp), ("gs", st.get("gamesStarted") or 0), ("sa", sa),
+                                     ("sv", sa - ga), ("ga", ga), ("w", st.get("wins") or 0),
+                                     ("so", st.get("shutouts") or 0)]:
+                        acc[key] = acc.get(key, 0) + w * val
+                else:
+                    acc = skater_stats.setdefault(pid, {})
+                    for key, src in [("g", "goals"), ("a", "assists"), ("shots", "shots"), ("pim", "pim"),
+                                     ("pm", "plusMinus"), ("ppg", "powerPlayGoals"), ("shg", "shorthandedGoals")]:
+                        acc[key] = acc.get(key, 0) + w * (st.get(src) or 0)
+                    acc["gp"] = acc.get("gp", 0) + w * gp
+                    acc["toi_x_gp"] = acc.get("toi_x_gp", 0) + w * gp * toi_seconds(st.get("avgToi"))
+                    fo = st.get("faceoffWinningPctg") or 0
+                    if fo > 0:
+                        acc["fo_x_gp"] = acc.get("fo_x_gp", 0) + w * gp * fo
+                        acc["fo_gp"] = acc.get("fo_gp", 0) + w * gp
+            elif league in NHLE and season >= "20232024" and p["positionCode"] != "G":
+                other_pts += NHLE[league] * (st.get("points") or 0)
+                other_gp += gp
+        for acc in (skater_stats.get(pid), goalie_stats.get(pid)):
+            if acc is not None:
+                acc["nhl_gp"] = career_gp
+        if other_gp >= 10:
+            nhle_ppg[pid] = other_pts / other_gp
+        p["_career_gp"] = career_gp
+        if n_done % 100 == 0:
+            print(f"  career data {n_done}/{len(roster_players)}", flush=True)
+
+    # Current-season ice time: how each team deploys its players right now.
+    usage: dict[int, dict] = {}
+    data = fetch(f"skater/timeonice?limit=-1&cayenneExp=seasonId={CURRENT_SEASON}%20and%20gameTypeId=2",
+                 refresh, base=STATS_API, cache_name=f"timeonice_{CURRENT_SEASON}")
+    for r in (data or {}).get("data", []):
+        usage[r["playerId"]] = {"gp": r.get("gamesPlayed") or 0, "es": r.get("evTimeOnIcePerGame") or 0,
+                                "pp": r.get("ppTimeOnIcePerGame") or 0, "sh": r.get("shTimeOnIcePerGame") or 0}
 
     # "Realtime" stats: hits, blocked shots, takeaways, giveaways (per 60 minutes).
     realtime: dict[int, dict] = {}
@@ -242,14 +392,6 @@ def main():
             for k, src in [("hits", "hits"), ("blocks", "blockedShots"), ("takeaways", "takeaways"),
                            ("giveaways", "giveaways")]:
                 acc[k] = acc.get(k, 0) + weight * (r.get(src) or 0)
-
-    # Current rosters.
-    roster_players = []
-    for abbr in TEAMS:
-        roster = fetch(f"roster/{abbr}/current", refresh)
-        for group in ("forwards", "defensemen", "goalies"):
-            for p in roster.get(group, []):
-                roster_players.append((abbr, p))
 
     # Per-game rates for percentile ranking (only meaningful samples).
     def rates(pid, pos):
@@ -372,8 +514,16 @@ def main():
                                  else rng.uniform(4, 9) if pos == "C" else rng.uniform(2, 7)),
                 }
             else:
-                # Rookies / call-ups without a usable NHL sample.
-                base = rng.uniform(7.5, 10.5) if nhl_gp else rng.uniform(6.5, 10)
+                # Rookies / call-ups without a usable NHL sample: rate them from
+                # NHL-equivalent scoring in other leagues when we have it.
+                if pid in nhle_ppg:
+                    ppg_vals = [v["ppg"] for v in pools[grp].values()]
+                    mean = sum(ppg_vals) / len(ppg_vals)
+                    sd = (sum((x - mean) ** 2 for x in ppg_vals) / len(ppg_vals)) ** 0.5
+                    z = (nhle_ppg[pid] - mean) / sd
+                    base = clamp(10.0 + 2.4 * z, 6.5, 13.5) + rng.uniform(-0.6, 0.6)
+                else:
+                    base = rng.uniform(7.5, 10.5) if nhl_gp else rng.uniform(6.5, 10)
                 attrs = {k: base + noise(1.8) for k in
                          ("skating", "shooting", "passing", "puck_handling", "offense_iq",
                           "defense", "physical", "endurance")}
@@ -440,13 +590,17 @@ def main():
             "nationality": p.get("birthCountry", ""),
             "height_cm": p.get("heightInCentimeters"),
             "weight_kg": p.get("weightInKilograms"),
-            "nhl_games": int(nhl_gp),
+            "nhl_games": int(p.get("_career_gp", nhl_gp)),
+            "season_gp": int(p.get("_cur_gp", 0)),
+            "tendencies": tendencies(pid, pos, attrs, skater_stats.get(pid)),
             "overall": ovr,
             "potential": pot,
             "attributes": attrs,
             "details": details,
             "_real_team": abbr,
             "_raw": raw,
+            "_usage": usage.get(pid, {}),
+            "_cur_gs": p.get("_cur_gs", 0),
         })
 
     # Balance D sides per team: if one side is overloaded, players who could go
@@ -482,6 +636,26 @@ def main():
             if fixed:
                 pl["potential"] = max(pl["potential"], fixed)
                 pl["overall"] = fixed
+
+    # ------------------------------------------------------------ roster status + depth charts
+    # NHL rosters max out at 23. Extra players (least used this season, then
+    # lowest rated) start in the reserve list (scratched / minors).
+    depth_charts = {}
+    for abbr in TEAMS:
+        roster = [pl for pl in players if pl["_real_team"] == abbr]
+        for pl in roster:
+            pl["roster_status"] = "NHL"
+        goalies = sorted([pl for pl in roster if pl["position"] == "G"],
+                         key=lambda pl: (pl["_cur_gs"], pl["overall"]), reverse=True)
+        protected = set(id(g) for g in goalies[:2])          # always carry two goalies
+        for g in goalies[2:]:
+            g["roster_status"] = "Reserve"
+        skaters = sorted([pl for pl in roster if pl["position"] != "G"],
+                         key=lambda pl: (pl["_usage"].get("gp", 0) > 0 or pl["overall"] >= 80, pl["overall"]),
+                         reverse=True)
+        for pl in skaters[23 - len(protected):]:
+            pl["roster_status"] = "Reserve"
+        depth_charts[abbr] = build_depth_chart(roster)
 
     # ------------------------------------------------------------ contracts
     by_team: dict[str, list] = {}
@@ -529,7 +703,8 @@ def main():
                 and random.Random(p["id"] * 3).random() < 0.6
 
     for pl in players:
-        del pl["_real_team"], pl["_raw"]
+        for k in [k for k in pl if k.startswith("_")]:
+            del pl[k]
 
     teams = []
     for abbr, (city, nick, code) in TEAMS.items():
@@ -538,14 +713,16 @@ def main():
         primary, secondary = TEAM_COLORS[abbr]
         teams.append({"id": code, "city": city, "name": nick, "conference": conf,
                       "division": div, "payroll": payroll,
-                      "colors": {"primary": primary, "secondary": secondary}})
+                      "colors": {"primary": primary, "secondary": secondary},
+                      "depth_chart": depth_charts[abbr]})
     teams.sort(key=lambda t: (t["city"], t["name"]))
 
     league = {
         "season": SEASON_LABEL,
         "generated": date.today().isoformat(),
         "finances": {"salary_cap": SALARY_CAP, "cap_floor": CAP_FLOOR, "min_salary": MIN_SALARY,
-                     "max_salary": MAX_SALARY, "elc_max": ELC_MAX},
+                     "max_salary": MAX_SALARY, "elc_max": ELC_MAX, "bury_allowance": 1_150_000,
+                     "roster_max": 23, "roster_min": 20},
         "teams": teams,
         "players": sorted(players, key=lambda p: (p["team"], p["position"], -p["overall"])),
     }

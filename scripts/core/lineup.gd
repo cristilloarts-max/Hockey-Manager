@@ -13,6 +13,8 @@ var defense: Array = [[0, 0], [0, 0], [0, 0]]
 var goalies: Array = [0, 0]                   ## starter, backup
 var power_play: Array = [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0]]
 var penalty_kill: Array = [[0, 0, 0, 0], [0, 0, 0, 0]]
+## Share of games the starting goalie plays (the backup gets the rest).
+var starter_share := 0.72
 
 
 func dressed_ids() -> Array:
@@ -154,7 +156,7 @@ func problems() -> Array:
 
 func to_dict() -> Dictionary:
 	return {"forwards": forwards, "defense": defense, "goalies": goalies,
-		"power_play": power_play, "penalty_kill": penalty_kill}
+		"power_play": power_play, "penalty_kill": penalty_kill, "starter_share": starter_share}
 
 
 static func from_dict(d: Dictionary) -> Lineup:
@@ -164,7 +166,23 @@ static func from_dict(d: Dictionary) -> Lineup:
 	l.goalies = d["goalies"].map(func(x): return int(x))
 	l.power_play = _ints2(d.get("power_play", l.power_play))
 	l.penalty_kill = _ints2(d.get("penalty_kill", l.penalty_kill))
+	l.starter_share = float(d.get("starter_share", 0.72))
 	return l
+
+
+## Removes players who are no longer eligible (traded, sent to the reserve list).
+func drop_ineligible(players: Array) -> void:
+	var ok := {}
+	for p in players:
+		ok[p.id] = true
+	for group in [forwards, defense, power_play, penalty_kill]:
+		for unit in group:
+			for k in unit.size():
+				if unit[k] != 0 and not ok.has(unit[k]):
+					unit[k] = 0
+	for k in goalies.size():
+		if goalies[k] != 0 and not ok.has(goalies[k]):
+			goalies[k] = 0
 
 
 static func _ints2(a: Array) -> Array:

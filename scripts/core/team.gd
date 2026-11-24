@@ -8,6 +8,7 @@ var conference: String = ""
 var division: String = ""
 var primary := Color("#3a4a6b")
 var secondary := Color("#c8d0e0")
+var depth_chart: Dictionary = {}   ## real current-season lines (Lineup.from_dict format)
 
 
 static func from_dict(d: Dictionary) -> Team:
@@ -22,12 +23,14 @@ static func from_dict(d: Dictionary) -> Team:
 		t.primary = Color.html(colors["primary"])
 	if colors.has("secondary"):
 		t.secondary = Color.html(colors["secondary"])
+	t.depth_chart = d.get("depth_chart", {})
 	return t
 
 
 func to_dict() -> Dictionary:
 	return {"id": id, "city": city, "name": name, "conference": conference, "division": division,
-		"colors": {"primary": "#" + primary.to_html(false), "secondary": "#" + secondary.to_html(false)}}
+		"colors": {"primary": "#" + primary.to_html(false), "secondary": "#" + secondary.to_html(false)},
+		"depth_chart": depth_chart}
 
 
 func full_name() -> String:

@@ -5,6 +5,9 @@ extends VBoxContainer
 
 var _filter := 0   ## 0 all, 1 forwards, 2 defense, 3 goalies
 var _table: DataTable
+var _selected := 0
+var _down_btn: Button
+var _up_btn: Button
 
 
 func _ready() -> void:
@@ -26,18 +29,47 @@ func _ready() -> void:
 			_fill())
 		top.add_child(b)
 	top.add_child(UI.spacer())
-	var roster := League.roster(Game.user_team_id)
-	var age := 0.0
-	for p in roster:
-		age += p.age
-	top.add_child(UI.pill("%d players" % roster.size(), AppTheme.PANEL_3, AppTheme.TEXT))
-	top.add_child(UI.pill("Avg age %.1f" % (age / maxf(1, roster.size())), AppTheme.PANEL_3, AppTheme.TEXT))
-	top.add_child(UI.pill("Cap space %s" % Game.money(League.cap_space(Game.user_team_id)), AppTheme.PANEL_3, AppTheme.TEXT))
-	add_child(UI.label("Double-click a player to open his profile. Click a column title to sort.", 13, AppTheme.MUTED))
+	var team_id := Game.user_team_id
+	var nhl := League.nhl_roster(team_id)
+	var goalies := nhl.filter(func(p): return p.is_goalie()).size()
+	var size_ok: bool = nhl.size() <= Game.roster_max() and nhl.size() >= Game.roster_min()
+	var space := League.cap_space(team_id)
+	top.add_child(UI.pill("NHL roster %d / %d" % [nhl.size(), Game.roster_max()], AppTheme.GREEN if size_ok else AppTheme.RED))
+	top.add_child(UI.pill("Goalies %d" % goalies, AppTheme.GREEN if goalies >= 2 else AppTheme.RED))
+	top.add_child(UI.pill("Cap space %s" % Game.money(space), AppTheme.GREEN if space >= 0 else AppTheme.RED))
+
+	var actions := UI.hbox(8)
+	add_child(actions)
+	actions.add_child(UI.label("Double-click a player for his profile. Select one to move him:", 13, AppTheme.MUTED))
+	_down_btn = UI.button("Send to Reserve", func(): _move("Reserve"))
+	_up_btn = UI.button("Call Up to NHL", func(): _move("NHL"))
+	_down_btn.disabled = true
+	_up_btn.disabled = true
+	actions.add_child(_down_btn)
+	actions.add_child(_up_btn)
+	actions.add_child(UI.spacer())
+	var problems := Game.roster_problems(team_id)
+	if not problems.is_empty():
+		actions.add_child(UI.label("! " + problems[0], 13, AppTheme.RED))
+	else:
+		actions.add_child(UI.label("Roster is legal: max 23 on the NHL roster, two goalies, under the cap. Reserve players only count against the cap above %s." % Game.money(League.finances.get("bury_allowance", 1150000)), 12, AppTheme.MUTED))
 
 	_table = make_table(Game.user_team_id)
+	_table.row_selected.connect(func(id):
+		_selected = int(id)
+		var p := League.get_player(_selected)
+		_down_btn.disabled = p == null or not p.on_nhl_roster()
+		_up_btn.disabled = p == null or p.on_nhl_roster())
 	add_child(_table)
 	_fill()
+
+
+func _move(status: String) -> void:
+	if _selected == 0:
+		return
+	Game.set_roster_status(_selected, status)
+	if Hub.current != null:
+		Hub.current.refresh()
 
 
 ## A styled roster table for any team (also used on opponents' club pages).
@@ -76,7 +108,7 @@ static func rows_for(team_id: String, filter: int) -> Array:
 			favg /= f.size()
 		var avg := Game.avg_rating(p.id)
 		var status := Game.squad_status(p)
-		var cell_bg := {0: team.primary, 6: AppTheme.ovr_color(p.overall)}
+		var cell_bg := {0: team.primary if p.on_nhl_roster() else AppTheme.PANEL_3, 6: AppTheme.ovr_color(p.overall)}
 		if favg > 0:
 			cell_bg[10] = AppTheme.rating_color(favg)
 		if avg > 0:
@@ -89,7 +121,8 @@ static func rows_for(team_id: String, filter: int) -> Array:
 			"keys": [0, p.number, p.last_name, p.position, "", p.age, p.overall, p.potential, cond, m, favg, gp, g, a,
 				g + a, avg, p.cap_hit(), status],
 			"cell_bg": cell_bg,
-			"cell_colors": {8: AppTheme.condition_color(cond), 9: AppTheme.morale_color(m), 17: _status_color(status)}})
+			"cell_colors": {8: AppTheme.condition_color(cond), 9: AppTheme.morale_color(m), 17: _status_color(status)},
+			"color": AppTheme.TEXT if p.on_nhl_roster() else AppTheme.FAINT})
 	return rows
 
 

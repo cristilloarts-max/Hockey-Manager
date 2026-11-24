@@ -25,7 +25,7 @@ func _ready() -> void:
 	add_theme_constant_override("separation", 12)
 	_team = League.get_team(Game.user_team_id)
 	_lineup = Game.lineups[Game.user_team_id]
-	_roster = League.roster(Game.user_team_id)
+	_roster = League.nhl_roster(Game.user_team_id)
 
 	# Toolbar.
 	var bar := UI.hbox(6)
@@ -44,6 +44,9 @@ func _ready() -> void:
 		bar.add_child(b)
 		_unit_buttons.append(b)
 	bar.add_child(UI.spacer())
+	var hint := UI.label("Drag a player from the table onto a jersey, or a jersey onto another to swap.", 12, AppTheme.MUTED)
+	hint.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	bar.add_child(hint)
 	_problems = UI.label("", 13, AppTheme.ORANGE)
 	_problems.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	bar.add_child(_problems)
@@ -82,6 +85,8 @@ func _ready() -> void:
 	_table.setup([["Slot", 64], ["#", 40], ["Player", 0], ["Pos", 46], ["Role", 56], ["OVR", 52],
 		["Cond", 60], ["Morale", 92], ["Form", 56], ["PTS", 50]])
 	_table.row_activated.connect(func(id): Hub.go("Player", int(id)))
+	# Drag players out of the table; drop a jersey on the table to take him out.
+	_table.set_drag_forwarding(_table_get_drag, _table_can_drop, _table_drop)
 	UI.body(squad).add_child(_table)
 	_rebuild()
 
@@ -191,7 +196,92 @@ func _make_token(slot: Dictionary) -> Control:
 			tier, p.familiarity_at(spot), "  |  OFF side" if p.is_off_side_at(spot) else "",
 			"Best role here", role["name"]]
 	btn.pressed.connect(_open_picker.bind(slot, btn))
+	btn.set_drag_forwarding(_token_get_drag.bind(slot), _token_can_drop.bind(slot), _token_drop.bind(slot))
 	return btn
+
+
+# ------------------------------------------------------------------ drag and drop
+
+func _drag_preview(pid: int) -> Control:
+	var p := League.get_player(pid)
+	var box := UI.vbox(2)
+	var j := Jersey.make(_team.id, str(p.number) if p else "", 40)
+	box.add_child(j)
+	box.add_child(UI.pill(p.short_name() if p else "", Color(0, 0, 0, 0.7), Color.WHITE, 12))
+	box.modulate = Color(1, 1, 1, 0.85)
+	return box
+
+
+func _token_get_drag(_at: Vector2, slot: Dictionary) -> Variant:
+	var pid: int = slot["arr"][slot["idx"]]
+	if pid == 0:
+		return null
+	set_drag_preview(_drag_preview(pid))
+	return {"type": "player", "id": pid, "slot": slot}
+
+
+func _token_can_drop(_at: Vector2, data: Variant, slot: Dictionary) -> bool:
+	if typeof(data) != TYPE_DICTIONARY or data.get("type", "") != "player":
+		return false
+	var p := League.get_player(int(data["id"]))
+	return p != null and p.is_goalie() == (slot["spot"] == "G")
+
+
+func _token_drop(_at: Vector2, data: Variant, slot: Dictionary) -> void:
+	_place(int(data["id"]), slot, data.get("slot", {}))
+
+
+func _table_get_drag(at: Vector2) -> Variant:
+	var item := _table.get_item_at_position(at)
+	if item == null:
+		return null
+	var pid := int(item.get_metadata(0))
+	set_drag_preview(_drag_preview(pid))
+	return {"type": "player", "id": pid}
+
+
+func _table_can_drop(_at: Vector2, data: Variant) -> bool:
+	return typeof(data) == TYPE_DICTIONARY and data.has("slot")
+
+
+func _table_drop(_at: Vector2, data: Variant) -> void:
+	var slot: Dictionary = data["slot"]
+	slot["arr"][slot["idx"]] = 0
+	_rebuild()
+
+
+## Put `pid` into `slot`. Jersey-to-jersey drags swap the two players. Drags
+## from the table also swap when the player already has a spot in the same
+## kind of unit (even strength, goalies, power play or penalty kill).
+func _place(pid: int, slot: Dictionary, from_slot: Dictionary) -> void:
+	var arr: Array = slot["arr"]
+	var idx: int = slot["idx"]
+	var current: int = arr[idx]
+	if current == pid:
+		return
+	if not from_slot.is_empty():
+		from_slot["arr"][from_slot["idx"]] = current
+	else:
+		for group in _groups_like(arr):
+			for unit in group:
+				for k in unit.size():
+					if unit[k] == pid:
+						unit[k] = current
+	arr[idx] = pid
+	_rebuild()
+
+
+## The unit arrays that belong to the same kind of unit as `arr`.
+func _groups_like(arr: Array) -> Array:
+	for u in _lineup.power_play:
+		if is_same(u, arr):
+			return [_lineup.power_play]
+	for u in _lineup.penalty_kill:
+		if is_same(u, arr):
+			return [_lineup.penalty_kill]
+	if is_same(arr, _lineup.goalies):
+		return [[_lineup.goalies]]
+	return [_lineup.forwards, _lineup.defense]
 
 
 func _center(c: Control) -> Control:
@@ -253,7 +343,21 @@ func _build_summary() -> void:
 			pref += 1
 		n += 1
 	if n == 0:
-		_summary.add_child(UI.label("Goalies only on this screen.", 13, AppTheme.MUTED))
+		var g_row := UI.hbox(10)
+		_summary.add_child(g_row)
+		g_row.add_child(UI.label("Starter plays", 14))
+		var share := OptionButton.new()
+		var options := [0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.95]
+		for o in options:
+			share.add_item("%d%% of games" % int(o * 100))
+		var best := 0
+		for i in options.size():
+			if absf(options[i] - _lineup.starter_share) < absf(options[best] - _lineup.starter_share):
+				best = i
+		share.select(best)
+		share.item_selected.connect(func(i): _lineup.starter_share = options[i])
+		g_row.add_child(share)
+		_summary.add_child(UI.label("The backup starts the rest, and always when the starter is worn out.", 12, AppTheme.MUTED))
 		return
 	var row := UI.hbox(18)
 	_summary.add_child(row)
