@@ -6,19 +6,28 @@ var _body: VBoxContainer
 
 
 func _ready() -> void:
-	add_theme_constant_override("separation", 10)
-	var top := UI.hbox(12)
+	add_theme_constant_override("separation", 12)
+	var top := UI.hbox(10)
 	add_child(top)
 	top.add_child(UI.heading("Standings"))
-	var mode := OptionButton.new()
-	for m in ["Division", "Conference", "League"]:
-		mode.add_item(m)
-	mode.item_selected.connect(func(i):
-		_mode = i
-		_fill())
-	top.add_child(mode)
-	top.add_child(UI.label("Top 3 in each division + 2 wild cards per conference make the playoffs (marked *).", 0, UI.MUTED))
+	var group := ButtonGroup.new()
+	var names := ["Division", "Conference", "League"]
+	for i in names.size():
+		var b := Button.new()
+		b.text = names[i]
+		b.toggle_mode = true
+		b.button_group = group
+		b.button_pressed = i == 0
+		b.custom_minimum_size = Vector2(100, 32)
+		b.pressed.connect(func():
+			_mode = i
+			_fill())
+		top.add_child(b)
+	top.add_child(UI.spacer())
+	top.add_child(UI.pill("Playoff spot", AppTheme.GREEN))
+	top.add_child(UI.pill("Your team", UI.USER_COLOR))
 	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	UI.expand(scroll)
 	add_child(scroll)
 	_body = UI.vbox(16)
@@ -40,36 +49,46 @@ func _fill() -> void:
 			groups.append([c + " Conference", func(t): return t.conference == c])
 	else:
 		groups.append(["League", Callable()])
+	var grid := GridContainer.new()
+	grid.columns = 2 if _mode < 2 else 1
+	grid.add_theme_constant_override("h_separation", 14)
+	grid.add_theme_constant_override("v_separation", 14)
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_body.add_child(grid)
 	for g in groups:
-		_body.add_child(UI.label(g[0], 18))
 		var rows: Array = Game.standings_sorted(g[1])
+		var card := UI.card(g[0], 10)
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.add_child(card)
 		var table := DataTable.new()
-		table.custom_minimum_size = Vector2(0, 36 + 28 * rows.size())
-		table.setup([["", 36], ["Team", 0], ["GP", 50], ["W", 50], ["L", 50], ["OTL", 50], ["PTS", 55],
-			["P%", 65], ["RW", 50], ["GF", 50], ["GA", 50], ["DIFF", 60], ["Home", 90], ["Away", 90], ["L10", 80], ["STRK", 60]])
+		table.row_height = 28
+		table.custom_minimum_size = Vector2(0, 40 + 37 * rows.size())
+		table.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+		table.setup([["", 36], ["", 10], ["Team", 0], ["GP", 44], ["W", 44], ["L", 44], ["OTL", 48], ["PTS", 52],
+			["DIFF", 56], ["L10", 72], ["STRK", 56]])
+		table.row_activated.connect(func(id): Hub.go("Club", id))
 		var out := []
 		var rank := 0
 		for r in rows:
 			rank += 1
 			var l10: Array = r["last10"]
-			var lw := l10.count("W")
-			var ll := l10.count("L")
-			var lo := l10.count("O")
-			var pct: float = float(r["pts"]) / maxf(1.0, r["gp"] * 2.0)
-			var mark := "*" if playoff.has(r["team"]) else ""
+			var diff: int = r["gf"] - r["ga"]
 			var row := {"id": r["team"],
-				"cells": [str(rank) + mark, UI.team_name(r["team"]), r["gp"], r["w"], r["l"], r["otl"], r["pts"],
-					"%.3f" % pct, r["rw"], r["gf"], r["ga"], r["gf"] - r["ga"],
-					"%d-%d-%d" % [r["home_w"], r["home_l"], r["home_otl"]],
-					"%d-%d-%d" % [r["away_w"], r["away_l"], r["away_otl"]],
-					"%d-%d-%d" % [lw, ll, lo], r["streak"]],
-				"keys": [rank, UI.team_name(r["team"]), r["gp"], r["w"], r["l"], r["otl"], r["pts"], pct,
-					r["rw"], r["gf"], r["ga"], r["gf"] - r["ga"], r["home_w"], r["away_w"], lw, r["streak"]]}
+				"cells": [rank, "", UI.team_name(r["team"]), r["gp"], r["w"], r["l"], r["otl"], r["pts"],
+					"%+d" % diff, "%d-%d-%d" % [l10.count("W"), l10.count("L"), l10.count("O")], r["streak"]],
+				"keys": [rank, r["team"], UI.team_name(r["team"]), r["gp"], r["w"], r["l"], r["otl"], r["pts"],
+					diff, l10.count("W"), r["streak"]],
+				"cell_bg": {1: League.get_team(r["team"]).primary},
+				"cell_colors": {8: AppTheme.GREEN if diff > 0 else (AppTheme.RED if diff < 0 else AppTheme.MUTED),
+					10: AppTheme.result_color(r["streak"]) if r["streak"] != "" else AppTheme.MUTED}}
+			if playoff.has(r["team"]):
+				row["cell_bg"][0] = Color(AppTheme.GREEN, 0.85)
 			if r["team"] == Game.user_team_id:
-				row["color"] = UI.USER_COLOR
+				row["bg"] = Color(UI.USER_COLOR, 0.16)
+				row["color"] = Color.WHITE
 			out.append(row)
 		table.set_rows(out)
-		_body.add_child(table)
+		UI.body(card).add_child(table)
 
 
 ## Top 3 per division plus the next 2 best in each conference.

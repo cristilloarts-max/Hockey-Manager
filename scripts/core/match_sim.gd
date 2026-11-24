@@ -365,6 +365,8 @@ func _unit_rating(unit: Array, kind: String, late: bool) -> float:
 			v *= 1.02
 		if late:
 			v *= 0.96 + 0.04 * p.attr("endurance") / 20.0
+		# Tired legs: a player at 70% condition plays ~2% below his ratings.
+		v *= 0.94 + 0.06 * Game.condition_of(p.id) / 100.0
 		total += v
 	return total / unit.size()
 
@@ -648,12 +650,29 @@ func _log(side: int, kind: String, text: String, t_in_period: int = -1) -> void:
 	events.append({"period": label, "time": stamp, "team": team_id, "type": kind, "text": text})
 
 
+## Football Manager-style match ratings (about 6.0-9.5; 6.8 is a solid night).
+func _rate_players() -> void:
+	for pid in stats:
+		var l: Dictionary = stats[pid]
+		var r := 6.3 + l["g"] * 0.85 + l["a"] * 0.5 + l["pm"] * 0.22 + l["shots"] * 0.07 \
+			- l["pim"] * 0.06 + (l["toi"] - 900.0) / 1800.0 * 0.3 + rng.randf_range(-0.25, 0.25)
+		l["rating"] = snappedf(clampf(r, 4.8, 10.0), 0.1)
+	for gid in goalie_stats:
+		var l: Dictionary = goalie_stats[gid]
+		var sa: int = l["sa"]
+		var sv := (float(sa - l["ga"]) / sa) if sa > 0 else 0.9
+		var r := 6.6 + (sv - 0.905) * 22.0 + (0.3 if l["decision"] == "W" else 0.0) \
+			+ (0.8 if l["ga"] == 0 and sa > 10 else 0.0) + sa * 0.01 + rng.randf_range(-0.2, 0.2)
+		l["rating"] = snappedf(clampf(r, 4.5, 10.0), 0.1)
+
+
 func _result() -> Dictionary:
+	_rate_players()
 	var stars := stats.keys()
 	stars.sort_custom(func(a, b):
 		var sa: Dictionary = stats[a]
 		var sb: Dictionary = stats[b]
-		return sa["g"] * 3 + sa["a"] * 2 + sa["shots"] * 0.2 > sb["g"] * 3 + sb["a"] * 2 + sb["shots"] * 0.2)
+		return sa["rating"] > sb["rating"])
 	return {
 		"home": sides[0]["team"].id, "away": sides[1]["team"].id,
 		"home_goals": sides[0]["goals"], "away_goals": sides[1]["goals"],

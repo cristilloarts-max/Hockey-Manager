@@ -10,10 +10,41 @@ See [docs/GAME_DESIGN.md](docs/GAME_DESIGN.md) for the full design and roadmap.
 2. In the Project Manager, choose **Import** and select `project.godot` in this folder.
 3. Press **F5** (Run Project).
 
+## Look and feel
+
+- **Dark navy theme, team colors everywhere.**
+  - Each club has its own colors: crests, jerseys, the top bar when it's your team, the club page when it's an opponent, and the box score.
+  - A hot-pink **Continue** button drives the game.
+- **Color scales you can read at a glance:**
+  - attributes 1-20: red (weak), orange, yellow, lime, green (elite)
+  - match ratings and form tiles: red (bad night) to green (great night)
+  - morale (Superb to Very Poor) and condition (%)
+  - results: green W, red L, orange OT
+- **Football Manager-style navigation:** back/forward, section menus (Home, Squad, Tactics, League) with sub-tabs, the date and next opponent, and Continue.
+- **Player profile:**
+  - **Header:** team-colored, with ability and potential stars and squad status.
+  - **Positions:** a rink showing familiarity at every spot.
+  - **Roles:** hockey roles (Sniper, Playmaker, Power Forward, Offensive D, Butterfly...) with star ratings. Picking one highlights its key attributes.
+  - **Attributes:** 26 detailed attributes in Technical / Mental / Physical columns (15 for goalies).
+  - **Bottom strip:** morale, condition, last-5 form tiles and season stats.
+- **Lines:**
+  - Pick a unit (Line 1-4, PP1-2, PK1-2, Goalies) and see it on the rink in your jerseys.
+  - Each jersey shows the player's best role and his familiarity at that spot; click a jersey to swap players.
+  - The squad table alongside shows line badges, condition, morale and form.
+- **Club page:**
+  - crest card and club facts
+  - a league-position chart over the season
+  - recent results as colored tiles
+  - upcoming games
+  - key personnel on jerseys
+- **Living players:** every game gives each player a match rating, which feeds his form (last 5) and season average.
+  - **Morale** rises and falls with results, his own play and whether he dresses.
+  - **Condition** drops with ice time and recovers between games; tired players play slightly worse.
+
 ## What's in Phase 1
 
 - **Team picker:** all 32 teams with strength, payroll, cap space and key players.
-- **Roster:** sortable table with positions, side preference, ratings, potential range, stats and contracts. Double-click a player for his profile: attributes, position familiarity at every spot, contract and season stats.
+- **Players:** sortable, color-coded roster with roles, condition, morale, form, stats, contracts and squad status. Double-click anyone to open his profile.
 - **Lines:** 4 forward lines, 3 D pairs, goalies, 2 PP and 2 PK units.
   - Every slot shows the player's familiarity there (Natural to Awkward) and whether he's on his off side.
   - Anyone can play anywhere, but the sim applies the penalty.

@@ -22,12 +22,12 @@ func _ready() -> void:
 	summary.add_child(UI.label("Cap space  %s" % Game.money(space), 16,
 		Color(0.4, 0.9, 0.5) if space >= 0 else Color(1, 0.4, 0.4)))
 
-	var bar := ProgressBar.new()
-	bar.max_value = cap
-	bar.value = mini(payroll, cap)
-	bar.show_percentage = false
-	bar.custom_minimum_size = Vector2(0, 14)
+	var used := 100.0 * payroll / maxf(1.0, cap)
+	var bar_color := AppTheme.GREEN if used < 90 else (AppTheme.YELLOW if used < 98 else AppTheme.RED)
+	var bar := UI.meter(minf(used, 100.0), bar_color, 400, 14)
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	add_child(bar)
+	add_child(UI.label("%.1f%% of the cap used" % used, 13, bar_color))
 
 	var start_year := int(League.season_label.substr(0, 4)) if League.season_label.length() >= 4 else 2026
 	var headers := [["Player", 0], ["Pos", 50], ["Age", 50], ["Status", 110]]
@@ -35,7 +35,7 @@ func _ready() -> void:
 		headers.append(["%d-%02d" % [start_year + y, (start_year + y + 1) % 100], 105])
 	var table := DataTable.new()
 	table.setup(headers)
-	table.row_activated.connect(func(id): PlayerWindow.open(self, int(id)))
+	table.row_activated.connect(func(id): Hub.go("Player", int(id)))
 	add_child(table)
 
 	var totals := []
@@ -62,7 +62,19 @@ func _ready() -> void:
 			else:
 				cells.append("")
 				keys.append(0)
-		rows.append({"id": p.id, "cells": cells, "keys": keys})
+		var big := {}
+		for y in YEARS:
+			if y < c["years"]:
+				var share: float = float(c["cap_hit"]) / cap
+				if share >= 0.08:
+					big[4 + y] = AppTheme.GOLD
+				elif share >= 0.04:
+					big[4 + y] = AppTheme.TEXT
+				else:
+					big[4 + y] = AppTheme.MUTED
+			elif y == c["years"]:
+				big[4 + y] = AppTheme.ORANGE if c["expiry_status"] == "UFA" else AppTheme.BLUE
+		rows.append({"id": p.id, "cells": cells, "keys": keys, "cell_colors": big})
 	table.set_rows(rows)
 	table.sort_by(4, true)
 

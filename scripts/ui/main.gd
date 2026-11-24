@@ -5,13 +5,16 @@ var _current: Control
 
 
 func _ready() -> void:
+	theme = AppTheme.build()
+	get_window().theme = theme
 	var bg := ColorRect.new()
-	bg.color = Color(0.09, 0.1, 0.13)
+	bg.color = AppTheme.BG
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
 	if not League.load_default():
 		_swap(UI.label("Could not load data/league.json. Run tools/build_league.py first.", 20))
 		return
+	get_window().min_size = Vector2i(1280, 760)
 	show_title()
 
 

@@ -17,11 +17,14 @@ from datetime import date
 from pathlib import Path
 
 from spoof_names import spoof_name
+from attributes import (TEAM_COLORS, skater_details, goalie_details, core_from_details,
+                        apply_core_override)
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / "tools" / ".cache"
 OUT = ROOT / "data" / "league.json"
 API = "https://api-web.nhle.com/v1"
+STATS_API = "https://api.nhle.com/stats/rest/en"
 
 SEASON_LABEL = "2026-27"
 STAT_SEASONS = [("20252026", 0.65), ("20242025", 0.35)]  # (season, weight)
@@ -73,14 +76,14 @@ assert len({t[2] for t in TEAMS.values()}) == 32
 
 
 # ---------------------------------------------------------------- fetching
-def fetch(path: str, refresh: bool):
+def fetch(path: str, refresh: bool, base: str = API, cache_name: str = ""):
     CACHE.mkdir(parents=True, exist_ok=True)
-    cache_file = CACHE / (path.strip("/").replace("/", "_") + ".json")
+    cache_file = CACHE / ((cache_name or path.strip("/").replace("/", "_")) + ".json")
     if cache_file.exists() and not refresh:
         return json.loads(cache_file.read_text())
     for attempt in range(4):
         r = subprocess.run(
-            ["curl", "-s", "-L", "--max-time", "30", "-w", "\n%{http_code}", f"{API}/{path}"],
+            ["curl", "-s", "-L", "--max-time", "60", "-w", "\n%{http_code}", f"{base}/{path}"],
             capture_output=True, text=True,
         )
         body, _, code = r.stdout.rpartition("\n")
@@ -226,6 +229,20 @@ def main():
                                  ("sv", "saves"), ("ga", "goalsAgainst"), ("w", "wins"), ("so", "shutouts")]:
                     acc[key] = acc.get(key, 0) + weight * (g.get(src) or 0)
 
+    # "Realtime" stats: hits, blocked shots, takeaways, giveaways (per 60 minutes).
+    realtime: dict[int, dict] = {}
+    for season, weight in STAT_SEASONS:
+        data = fetch(f"skater/realtime?limit=-1&cayenneExp=seasonId={season}%20and%20gameTypeId=2",
+                     refresh, base=STATS_API, cache_name=f"realtime_{season}")
+        for r in (data or {}).get("data", []):
+            acc = realtime.setdefault(r["playerId"], {})
+            toi = (r.get("timeOnIcePerGame") or 0) * (r.get("gamesPlayed") or 0)
+            acc["toi"] = acc.get("toi", 0) + weight * toi
+            acc["gp"] = acc.get("gp", 0) + weight * (r.get("gamesPlayed") or 0)
+            for k, src in [("hits", "hits"), ("blocks", "blockedShots"), ("takeaways", "takeaways"),
+                           ("giveaways", "giveaways")]:
+                acc[k] = acc.get(k, 0) + weight * (r.get(src) or 0)
+
     # Current rosters.
     roster_players = []
     for abbr in TEAMS:
@@ -266,6 +283,22 @@ def main():
 
     weights = {p["id"]: p["weightInPounds"] for _, p in roster_players if p.get("weightInPounds")}
     pct_weight = percentiles(weights)
+
+    # Per-60 realtime signals as z-scores within forwards / defense.
+    signals: dict[int, dict] = {}
+    for grp_codes in (("C", "L", "R"), ("D",)):
+        pool = {}
+        for _, p in roster_players:
+            rt = realtime.get(p["id"])
+            sk = skater_stats.get(p["id"])
+            if p["positionCode"] in grp_codes and rt and rt["gp"] >= 15 and rt["toi"] > 0:
+                per60 = {k: rt[k] * 3600 / rt["toi"] for k in ("hits", "blocks", "takeaways", "giveaways")}
+                per60["pim"] = (sk["pim"] / sk["gp"]) if sk and sk["gp"] else 0
+                pool[p["id"]] = per60
+        if pool:
+            for metric in ("hits", "blocks", "takeaways", "giveaways", "pim"):
+                for pid_, zv in zscores({k: v[metric] for k, v in pool.items()}).items():
+                    signals.setdefault(pid_, {})[metric] = zv
 
     goalie_pool = {}
     for _, p in roster_players:
@@ -369,6 +402,19 @@ def main():
         attrs = {k: int(round(clamp(v, 1, 20))) for k, v in attrs.items()}
         ovr = int(round(clamp(raw * 5, 30, 99)))
 
+        # Detailed attributes, then rebuild the core ratings from them.
+        drng = random.Random(pid * 31 + 7)
+        if pos == "G":
+            kind = "goalie"
+            details = goalie_details(attrs, age, int(nhl_gp), drng)
+        else:
+            kind = "skater"
+            details = skater_details(attrs, pos, signals.get(pid, {}), age, ovr, int(nhl_gp),
+                                     (pct_weight.get(pid, 0.5) - 0.5) * 3.4, drng)
+        for k, v in ov.get("attributes", {}).items():
+            apply_core_override(details, kind, k, v)
+        attrs = core_from_details(details, kind, attrs)
+
         # Hidden potential.
         if age <= 20:
             pot = ovr + rng.randint(6, 22)
@@ -398,6 +444,7 @@ def main():
             "overall": ovr,
             "potential": pot,
             "attributes": attrs,
+            "details": details,
             "_real_team": abbr,
             "_raw": raw,
         })
@@ -488,8 +535,10 @@ def main():
     for abbr, (city, nick, code) in TEAMS.items():
         conf, div = div_of[abbr]
         payroll = sum(p["contract"]["cap_hit"] for p in by_team[abbr])
+        primary, secondary = TEAM_COLORS[abbr]
         teams.append({"id": code, "city": city, "name": nick, "conference": conf,
-                      "division": div, "payroll": payroll})
+                      "division": div, "payroll": payroll,
+                      "colors": {"primary": primary, "secondary": secondary}})
     teams.sort(key=lambda t: (t["city"], t["name"]))
 
     league = {

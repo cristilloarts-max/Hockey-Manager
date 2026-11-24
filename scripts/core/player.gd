@@ -4,6 +4,23 @@ extends RefCounted
 
 const SKATER_SPOTS := ["C", "LW", "RW", "LD", "RD"]
 
+## Detailed attributes by group (keys match tools/attributes.py).
+const SKATER_GROUPS := {
+	"Technical": ["wrist_shot", "slap_shot", "deflections", "passing", "stickhandling",
+		"faceoffs", "poke_check", "shot_blocking", "body_checking"],
+	"Mental": ["offensive_awareness", "defensive_awareness", "vision", "anticipation",
+		"composure", "discipline", "work_rate", "aggression", "leadership", "teamwork"],
+	"Physical": ["speed", "acceleration", "agility", "balance", "strength", "stamina", "durability"],
+}
+const GOALIE_GROUPS := {
+	"Goalkeeping": ["reflexes", "glove", "blocker", "positioning", "rebound_control",
+		"post_play", "puck_handling"],
+	"Mental": ["anticipation", "composure", "concentration", "consistency", "communication"],
+	"Physical": ["agility", "flexibility", "recovery"],
+}
+const SPOT_NAMES := {"C": "Center", "LW": "Left Wing", "RW": "Right Wing",
+	"LD": "Left Defense", "RD": "Right Defense", "G": "Goaltender"}
+
 ## Familiarity tiers: [min familiarity, label, rating multiplier].
 const FAMILIARITY_TIERS := [
 	[18, "Natural", 1.00],
@@ -31,7 +48,8 @@ var weight_kg: int = 0
 var nhl_games: int = 0
 var overall: int = 50
 var potential: int = 50
-var attributes: Dictionary = {}    ## name -> 1..20
+var attributes: Dictionary = {}    ## core ratings the sim reads, name -> 1..20
+var details: Dictionary = {}       ## detailed attributes shown in the game, name -> 1..20
 var contract: Dictionary = {}      ## cap_hit, years, elc, expiry_status, no_trade_clause
 
 
@@ -53,6 +71,9 @@ static func from_dict(d: Dictionary) -> Player:
 	p.potential = int(d["potential"])
 	for k in d["attributes"]:
 		p.attributes[k] = int(d["attributes"][k])
+	var det: Dictionary = d.get("details", {})
+	for k in det:
+		p.details[k] = int(det[k])
 	var pos: Dictionary = d["positions"]
 	p.position = pos["preferred"]
 	p.comfortable = pos.get("comfortable", [])
@@ -77,6 +98,7 @@ func to_dict() -> Dictionary:
 		"nationality": nationality, "height_cm": height_cm, "weight_kg": weight_kg,
 		"nhl_games": nhl_games, "overall": overall, "potential": potential,
 		"attributes": attributes,
+		"details": details,
 		"positions": {"preferred": position, "comfortable": comfortable,
 			"prefers_off_side": prefers_off_side, "familiarity": familiarity},
 		"contract": contract,
@@ -101,6 +123,46 @@ func is_defense() -> bool:
 
 func attr(name: String) -> int:
 	return int(attributes.get(name, 1))
+
+
+## A detailed attribute (falls back to the closest core rating for old data).
+func detail(name: String) -> int:
+	if details.has(name):
+		return int(details[name])
+	return int(attributes.get(name, 10))
+
+
+func detail_groups() -> Dictionary:
+	return GOALIE_GROUPS if is_goalie() else SKATER_GROUPS
+
+
+static func attr_label(key: String) -> String:
+	return key.replace("_", " ").capitalize()
+
+
+## "Center, Right Wing" style list: preferred first, then comfortable spots.
+func positions_text() -> String:
+	var names := [SPOT_NAMES.get(position, position)]
+	for c in comfortable:
+		names.append(SPOT_NAMES.get(c, c))
+	return ", ".join(names)
+
+
+## Current ability as 0.5-5 stars.
+func ability_stars() -> float:
+	return clampf(roundf((overall - 45) / 52.0 * 10.0) / 2.0, 0.5, 5.0)
+
+
+## Potential as 0.5-5 stars (midpoint of the scouted range).
+func potential_stars() -> float:
+	return clampf(roundf((potential - 45) / 52.0 * 10.0) / 2.0, 0.5, 5.0)
+
+
+func height_text() -> String:
+	if height_cm <= 0:
+		return "-"
+	var inches := int(round(height_cm / 2.54))
+	return "%d cm (%d'%d\")" % [height_cm, inches / 12, inches % 12]
 
 
 func familiarity_at(spot: String) -> int:

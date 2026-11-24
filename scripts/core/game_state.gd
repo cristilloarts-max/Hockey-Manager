@@ -22,6 +22,11 @@ var goalie_season := {}      ## pid (String) -> season line
 var lineups := {}            ## team -> Lineup
 var tactics := {}            ## team -> Tactics
 var inbox := []              ## {day, title, body}
+var form := {}               ## pid (String) -> last 5 match ratings
+var morale := {}             ## pid (String) -> 0..100
+var condition := {}          ## pid (String) -> 0..100 (fitness for the next game)
+var rank_history := {}       ## team -> league rank after each game day
+var last_sim_day := -1
 
 
 # ------------------------------------------------------------------ setup
@@ -36,8 +41,15 @@ func new_game(team_id: String, game_seed: int = 0) -> void:
 	skater_stats.clear()
 	goalie_season.clear()
 	inbox.clear()
+	form.clear()
+	condition.clear()
+	rank_history.clear()
+	last_sim_day = -1
 	var rng := RandomNumberGenerator.new()
 	rng.seed = world_seed
+	morale.clear()
+	for pid in League.players:
+		morale[str(pid)] = rng.randi_range(55, 80)
 	schedule = Schedule.generate(League.team_list(), rng)
 	for g in schedule:
 		g["played"] = false
@@ -121,6 +133,7 @@ func sim_day() -> Array:
 			break
 	if next_day < 0:
 		return []
+	_recover(next_day)
 	var mine := []
 	for i in schedule.size():
 		var g: Dictionary = schedule[i]
@@ -129,6 +142,7 @@ func sim_day() -> Array:
 			if g["home"] == user_team_id or g["away"] == user_team_id:
 				mine.append(i)
 	day = next_day + 1
+	_record_ranks()
 	day_advanced.emit()
 	if is_season_over():
 		_on_season_over()
@@ -149,12 +163,14 @@ func sim_to_end() -> void:
 		for i in schedule.size():
 			if not schedule[i]["played"]:
 				var d: int = schedule[i]["day"]
+				_recover(d)
 				for j in range(i, schedule.size()):
 					if schedule[j]["day"] != d:
 						break
 					if not schedule[j]["played"]:
 						_play_game(j)
 				day = d + 1
+				_record_ranks()
 				break
 	day_advanced.emit()
 	_on_season_over()
@@ -249,6 +265,8 @@ func _apply_result(res: Dictionary) -> void:
 		if line["ga"] == 0 and line["decision"] == "W":
 			s["so"] += 1
 
+	_update_players(res, winner)
+
 	if home == user_team_id or away == user_team_id:
 		var mine_won := winner == user_team_id
 		var opp := away if home == user_team_id else home
@@ -258,6 +276,97 @@ func _apply_result(res: Dictionary) -> void:
 		add_message("%s %d-%d vs %s%s" % ["Win" if mine_won else "Loss", my_goals, their_goals,
 			League.get_team(opp).full_name(), suffix],
 			"Record: %s. Open Schedule to see the box score." % record_string(user_team_id))
+
+
+## Form, condition and morale after a game.
+func _update_players(res: Dictionary, winner: String) -> void:
+	var played := {}
+	for group in ["stats", "goalies"]:
+		for pid in res[group]:
+			var line: Dictionary = res[group][pid]
+			var key := str(pid)
+			played[key] = true
+			var rating: float = line.get("rating", 6.5)
+			var f: Array = form.get(key, [])
+			f.append(rating)
+			if f.size() > 5:
+				f.pop_front()
+			form[key] = f
+			var season_line: Dictionary = skater_stats.get(key, goalie_season.get(key, {}))
+			season_line["rsum"] = season_line.get("rsum", 0.0) + rating
+			season_line["rn"] = season_line.get("rn", 0) + 1
+			var drain: float = 9.0 if group == "goalies" else float(line["toi"]) / 60.0 * 0.55
+			condition[key] = maxf(40.0, condition_of(int(pid)) - drain)
+			var m := morale_of(int(pid))
+			var team_won: bool = line["team"] == winner
+			m += 3 if team_won else -2
+			if rating >= 7.3:
+				m += 2
+			elif rating < 6.2:
+				m -= 2
+			morale[key] = clampi(m, 5, 100)
+	# Regulars left out of the lineup get frustrated.
+	for t in [res["home"], res["away"]]:
+		var r := League.roster(t)
+		for idx in mini(18, r.size()):
+			var key := str(r[idx].id)
+			if not played.has(key) and not r[idx].is_goalie():
+				morale[key] = clampi(morale_of(r[idx].id) - 1, 5, 100)
+
+
+## Players recover 6% condition per day since the last game day.
+func _recover(to_day: int) -> void:
+	var days := 1 if last_sim_day < 0 else maxi(0, to_day - last_sim_day)
+	last_sim_day = to_day
+	if days == 0:
+		return
+	for key in condition.keys():
+		condition[key] = minf(100.0, condition[key] + 6.0 * days)
+
+
+func _record_ranks() -> void:
+	var rank := 1
+	for row in standings_sorted():
+		if not rank_history.has(row["team"]):
+			rank_history[row["team"]] = []
+		rank_history[row["team"]].append(rank)
+		rank += 1
+
+
+func condition_of(pid: int) -> float:
+	return float(condition.get(str(pid), 100.0))
+
+
+func morale_of(pid: int) -> int:
+	return int(morale.get(str(pid), 65))
+
+
+func form_of(pid: int) -> Array:
+	return form.get(str(pid), [])
+
+
+## Season average match rating, or 0 if he hasn't played.
+func avg_rating(pid: int) -> float:
+	var line := player_line(pid)
+	var n: int = line.get("rn", 0)
+	return float(line.get("rsum", 0.0)) / n if n > 0 else 0.0
+
+
+## Key Player / Important Player / Regular / Rotation / Depth / Prospect.
+func squad_status(p) -> String:
+	var r := League.roster(p.team_id)
+	var rank := r.find(p)
+	if p.age <= 21 and rank >= 9:
+		return "Prospect"
+	if rank < 3:
+		return "Key Player"
+	if rank < 8:
+		return "Important Player"
+	if rank < 15:
+		return "Regular Starter"
+	if rank < 20:
+		return "Rotation"
+	return "Depth"
 
 
 func _streak(current: String, outcome: String) -> String:
@@ -331,6 +440,8 @@ func save_game() -> bool:
 		"user_team_id": user_team_id, "seed": world_seed, "day": day,
 		"schedule": schedule, "box_scores": box_scores, "standings": standings,
 		"skater_stats": skater_stats, "goalie_season": goalie_season, "inbox": inbox,
+		"form": form, "morale": morale, "condition": condition, "rank_history": rank_history,
+		"last_sim_day": last_sim_day,
 		"lineups": _map_values(lineups, func(l): return l.to_dict()),
 		"tactics": _map_values(tactics, func(t): return t.to_dict()),
 	}
@@ -358,6 +469,11 @@ func load_game() -> bool:
 	skater_stats = _intify(data["skater_stats"])
 	goalie_season = _intify(data["goalie_season"])
 	inbox = _intify(data["inbox"])
+	form = data.get("form", {})
+	morale = _intify(data.get("morale", {}))
+	condition = data.get("condition", {})
+	rank_history = _intify(data.get("rank_history", {}))
+	last_sim_day = int(data.get("last_sim_day", -1))
 	lineups.clear()
 	for t in data["lineups"]:
 		lineups[t] = Lineup.from_dict(data["lineups"][t])
