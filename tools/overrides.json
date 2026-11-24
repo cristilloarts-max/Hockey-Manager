@@ -1,0 +1,14 @@
+{
+  "_comment": "Hand-tuning on top of the stat-based ratings, keyed by real NHL player id. 'attributes' sets 1-20 values; 'overall' pins the overall rating; 'rating_bonus' nudges the overall ranking (about +1 moves a player from good to star tier). 'first_name'/'last_name' replace an awkward spoofed name.",
+  "8478402": {
+    "_who": "Connor McDavid - best player in the league",
+    "attributes": {
+      "skating": 20,
+      "offense_iq": 20,
+      "passing": 20,
+      "puck_handling": 20
+    },
+    "rating_bonus": 2.0,
+    "overall": 99
+  }
+}

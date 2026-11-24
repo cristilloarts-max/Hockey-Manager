@@ -1,0 +1,7 @@
+# Godot
+.godot/
+*.import
+export/
+# Data pipeline
+tools/.cache/
+__pycache__/
