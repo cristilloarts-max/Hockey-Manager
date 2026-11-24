@@ -654,14 +654,14 @@ func _log(side: int, kind: String, text: String, t_in_period: int = -1) -> void:
 func _rate_players() -> void:
 	for pid in stats:
 		var l: Dictionary = stats[pid]
-		var r := 6.3 + l["g"] * 0.85 + l["a"] * 0.5 + l["pm"] * 0.22 + l["shots"] * 0.07 \
+		var r: float = 6.3 + l["g"] * 0.85 + l["a"] * 0.5 + l["pm"] * 0.22 + l["shots"] * 0.07 \
 			- l["pim"] * 0.06 + (l["toi"] - 900.0) / 1800.0 * 0.3 + rng.randf_range(-0.25, 0.25)
 		l["rating"] = snappedf(clampf(r, 4.8, 10.0), 0.1)
 	for gid in goalie_stats:
 		var l: Dictionary = goalie_stats[gid]
 		var sa: int = l["sa"]
 		var sv := (float(sa - l["ga"]) / sa) if sa > 0 else 0.9
-		var r := 6.6 + (sv - 0.905) * 22.0 + (0.3 if l["decision"] == "W" else 0.0) \
+		var r: float = 6.6 + (sv - 0.905) * 22.0 + (0.3 if l["decision"] == "W" else 0.0) \
 			+ (0.8 if l["ga"] == 0 and sa > 10 else 0.0) + sa * 0.01 + rng.randf_range(-0.2, 0.2)
 		l["rating"] = snappedf(clampf(r, 4.5, 10.0), 0.1)
 
