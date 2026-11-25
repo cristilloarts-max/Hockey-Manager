@@ -15,7 +15,7 @@ signal row_selected(id)
 var _rows: Array = []
 var _sort_col := -1
 var _sort_desc := true
-var row_height := 30
+var row_height := 34
 ## Columns whose text is drawn dark (they get a bright background tile).
 var dark_text_on_bg := true
 
@@ -38,7 +38,7 @@ func setup(headers: Array) -> void:
 		var h = headers[i]
 		var title: String = h if typeof(h) == TYPE_STRING else h[0]
 		var width: int = 0 if typeof(h) == TYPE_STRING else int(h[1])
-		set_column_title(i, title)
+		set_column_title(i, title.to_upper())
 		set_column_title_alignment(i, HORIZONTAL_ALIGNMENT_LEFT)
 		if width > 0:
 			set_column_expand(i, false)
@@ -90,7 +90,7 @@ func _render() -> void:
 		var item := create_item(root)
 		item.custom_minimum_height = row_height
 		var cells: Array = r["cells"]
-		var row_bg: Color = r.get("bg", Color(1, 1, 1, 0.025) if n % 2 == 1 else Color(0, 0, 0, 0))
+		var row_bg: Color = r.get("bg", Color(1, 1, 1, 0.018) if n % 2 == 1 else Color(0, 0, 0, 0))
 		for i in mini(cells.size(), columns):
 			var v = cells[i]
 			item.set_text(i, str(v))

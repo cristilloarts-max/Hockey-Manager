@@ -106,7 +106,7 @@ static func fair_salary(ovr: int) -> float:
 static func player_value(p, team_id: String, retained_pct: float = 0.0) -> float:
 	var strat := strategy(team_id)
 	var w: Array = WEIGHTS[strat]
-	var now := pow(maxf(0.0, (p.overall - 48) / 10.0), 3)
+	var now := pow(maxf(0.0, (p.base_overall - 48) / 10.0), 3)
 	if p.age > 30:
 		var k := 0.03 if strat == "contender" else (0.05 if strat == "bubble" else 0.07)
 		now *= maxf(0.4, 1.0 - k * (p.age - 30))
@@ -119,7 +119,7 @@ static func player_value(p, team_id: String, retained_pct: float = 0.0) -> float
 		youth = 0.5
 	elif p.age <= 26:
 		youth = 0.25
-	var future := pow(maxf(0.0, (p.potential - 48) / 10.0), 3) * youth
+	var future := pow(maxf(0.0, (p.base_potential - 48) / 10.0), 3) * youth
 	var v: float = w[0] * now + w[1] * future
 	var years: int = p.contract["years"]
 	# Rebuilding teams don't want veterans who are about to walk.
@@ -127,7 +127,7 @@ static func player_value(p, team_id: String, retained_pct: float = 0.0) -> float
 		v *= 0.5
 	# Contract value: bargains add, overpays subtract (over up to 4 seasons).
 	var cost: float = p.team_cap_hit() * (1.0 - retained_pct)
-	var surplus_m := (fair_salary(p.overall) - cost) / 1_000_000.0
+	var surplus_m := (fair_salary(p.base_overall) - cost) / 1_000_000.0
 	v += surplus_m * mini(years, 4) * 0.8
 	return maxf(v, -30.0)
 

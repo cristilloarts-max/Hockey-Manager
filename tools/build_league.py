@@ -11,6 +11,7 @@ Usage:  python3 tools/build_league.py            (uses cached responses if prese
         python3 tools/build_league.py --refresh  (re-downloads everything)
 """
 import json
+import math
 import random
 import subprocess
 import sys
@@ -202,6 +203,49 @@ def position_profile(pos: str, shoots: str, attrs: dict, rng: random.Random) -> 
     return {"preferred": pref, "comfortable": comfortable, "prefers_off_side": prefers_off, "familiarity": fam}
 
 
+# ---------------------------------------------------------------- display ratings
+# Internally ratings use a wide "base" scale (about 45-99) that contracts, trade
+# values and lineups are tuned on. Players see an NHL-calibre scale: every NHL
+# player is at least 74, a typical regular is about 81, and only stars reach 90+.
+
+def display_overall(rank_pct: float) -> int:
+    return int(round(74 + 14 * rank_pct + 10 * rank_pct ** 33))
+
+
+def base_from_display(display: float) -> int:
+    """Inverse of the display curve, then the base curve (for potentials)."""
+    lo, hi = 0.0, 1.0
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if 74 + 14 * mid + 10 * mid ** 33 < display:
+            lo = mid
+        else:
+            hi = mid
+    r = (lo + hi) / 2
+    return int(round(45 + 35 * r + 17 * r ** 8))
+
+
+def draft_projection(draft: dict, age: int) -> float | None:
+    """Ceiling suggested by where a young player was drafted (display scale)."""
+    pick = draft.get("overallPick")
+    if not pick or age > 25:
+        return None
+    return 78 + 18 * math.exp(-(pick - 1) / 14.0)
+
+
+GROWTH_BY_AGE = {18: 13, 19: 12, 20: 10, 21: 8, 22: 6, 23: 4, 24: 2.5, 25: 1.5, 26: 0.5}
+
+
+def display_potential(ovr: int, age: int, draft: dict, rng: random.Random) -> int:
+    trajectory = ovr + GROWTH_BY_AGE.get(age, 0 if age > 26 else 13) + rng.uniform(-1.5, 1.5)
+    proj = draft_projection(draft, age)
+    if proj is None:
+        pot = trajectory if age <= 26 else ovr
+    else:
+        pot = 0.5 * proj + 0.5 * trajectory
+    return int(round(min(99, max(ovr, pot))))
+
+
 # ---------------------------------------------------------------- sim tendencies
 # League-wide per-60 baselines (all situations) used as priors.
 PRIOR = {"F": {"shots60": 7.2, "a60": 1.45, "sh": 0.115}, "D": {"shots60": 4.6, "a60": 1.0, "sh": 0.05}}
@@ -367,6 +411,7 @@ def main():
                 acc["nhl_gp"] = career_gp
         if other_gp >= 10:
             nhle_ppg[pid] = other_pts / other_gp
+        p["_draft"] = landing.get("draftDetails") or {}
         p["_career_gp"] = career_gp
         if n_done % 100 == 0:
             print(f"  career data {n_done}/{len(roster_players)}", flush=True)
@@ -601,6 +646,7 @@ def main():
             "_raw": raw,
             "_usage": usage.get(pid, {}),
             "_cur_gs": p.get("_cur_gs", 0),
+            "_draft": p.get("_draft", {}),
         })
 
     # Balance D sides per team: if one side is overloaded, players who could go
@@ -629,6 +675,7 @@ def main():
         ranks = percentiles({pl["id"]: pl["_raw"] for pl in group})
         for pl in group:
             r = ranks[pl["id"]]
+            pl["_rank_pct"] = r
             new = int(round(45 + 35 * r + 17 * r ** 8))
             pl["potential"] = int(clamp(new + (pl["potential"] - pl["overall"]), new, 99))
             pl["overall"] = new
@@ -701,6 +748,19 @@ def main():
             c["expiry_status"] = "RFA" if (c["elc"] or age_at_expiry <= 26) and p["nhl_games"] < 500 else "UFA"
             c["no_trade_clause"] = (not c["elc"]) and c["cap_hit"] > 7_000_000 and p["age"] >= 27 \
                 and random.Random(p["id"] * 3).random() < 0.6
+
+    # Switch to the display scale; keep the base scale for the game's math.
+    for pl in players:
+        fixed = overrides.get(str(pl["id"]), {}).get("overall")
+        pl["base_overall"] = pl["overall"]
+        disp = fixed if fixed else display_overall(pl["_rank_pct"])
+        pot = display_potential(disp, pl["age"], pl["_draft"], random.Random(pl["id"] * 17 + 3))
+        pl["overall"] = disp
+        pl["potential"] = pot
+        pl["base_potential"] = max(pl["base_overall"], base_from_display(pot))
+        if pl["_draft"].get("overallPick"):
+            pl["draft"] = {"year": pl["_draft"].get("year"), "round": pl["_draft"].get("round"),
+                           "pick": pl["_draft"].get("overallPick")}
 
     for pl in players:
         for k in [k for k in pl if k.startswith("_")]:

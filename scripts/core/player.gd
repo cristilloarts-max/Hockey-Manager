@@ -46,8 +46,11 @@ var nationality: String = ""
 var height_cm: int = 0
 var weight_kg: int = 0
 var nhl_games: int = 0
-var overall: int = 50
-var potential: int = 50
+var overall: int = 74              ## shown to the player: 74-99 for NHL players
+var potential: int = 74            ## projected peak on the same scale
+var base_overall: int = 50         ## wider internal scale used by trades and lineups
+var base_potential: int = 50
+var draft: Dictionary = {}         ## {year, round, pick} if drafted
 var attributes: Dictionary = {}    ## core ratings the sim reads, name -> 1..20
 var details: Dictionary = {}       ## detailed attributes shown in the game, name -> 1..20
 var contract: Dictionary = {}      ## cap_hit, years, elc, expiry_status, no_trade_clause
@@ -72,6 +75,11 @@ static func from_dict(d: Dictionary) -> Player:
 	p.nhl_games = int(d.get("nhl_games", 0))
 	p.overall = int(d["overall"])
 	p.potential = int(d["potential"])
+	p.base_overall = int(d.get("base_overall", p.overall))
+	p.base_potential = int(d.get("base_potential", p.potential))
+	var dr: Dictionary = d.get("draft", {})
+	for k in dr:
+		p.draft[k] = int(dr[k]) if dr[k] != null else 0
 	for k in d["attributes"]:
 		p.attributes[k] = int(d["attributes"][k])
 	var det: Dictionary = d.get("details", {})
@@ -107,6 +115,7 @@ func to_dict() -> Dictionary:
 		"shoots": shoots, "number": number, "birth_date": birth_date, "age": age,
 		"nationality": nationality, "height_cm": height_cm, "weight_kg": weight_kg,
 		"nhl_games": nhl_games, "overall": overall, "potential": potential,
+		"base_overall": base_overall, "base_potential": base_potential, "draft": draft,
 		"attributes": attributes,
 		"details": details,
 		"positions": {"preferred": position, "comfortable": comfortable,
@@ -159,14 +168,20 @@ func positions_text() -> String:
 	return ", ".join(names)
 
 
-## Current ability as 0.5-5 stars.
+## Current ability as 0.5-5 stars (74 = half a star, 99 = five).
 func ability_stars() -> float:
-	return clampf(roundf((overall - 45) / 52.0 * 10.0) / 2.0, 0.5, 5.0)
+	return clampf(roundf((overall - 72) / 27.0 * 10.0) / 2.0, 0.5, 5.0)
 
 
-## Potential as 0.5-5 stars (midpoint of the scouted range).
+## Potential as 0.5-5 stars.
 func potential_stars() -> float:
-	return clampf(roundf((potential - 45) / 52.0 * 10.0) / 2.0, 0.5, 5.0)
+	return clampf(roundf((potential - 72) / 27.0 * 10.0) / 2.0, 0.5, 5.0)
+
+
+func draft_text() -> String:
+	if draft.is_empty() or draft.get("pick", 0) == 0:
+		return "Undrafted"
+	return "%d, round %d, #%d overall" % [draft["year"], draft["round"], draft["pick"]]
 
 
 func height_text() -> String:
@@ -247,9 +262,9 @@ func on_preferred_side(spot: String) -> bool:
 	return is_off_side_at(spot) == prefers_off_side
 
 
-## Value used for picking lineups: overall adjusted for the spot.
+## Value used for picking lineups: rating adjusted for the spot.
 func lineup_score(spot: String) -> float:
-	return overall * position_factor(spot)
+	return base_overall * position_factor(spot)
 
 
 func cap_hit() -> int:
@@ -263,7 +278,8 @@ func team_cap_hit() -> int:
 
 func potential_range() -> String:
 	# Phase 1 has no scouting yet: show a fuzzy range around the hidden potential.
-	if potential <= overall:
-		return str(overall)
-	var spread := 3 + (potential - overall) / 3
+	# Young players are harder to project: the range is wider.
+	var spread := 5 if age <= 20 else (4 if age <= 22 else (3 if age <= 24 else (1 if age <= 26 else 0)))
+	if spread == 0 or potential <= overall:
+		return str(maxi(overall, potential))
 	return "%d-%d" % [maxi(overall, potential - spread), mini(99, potential + spread)]

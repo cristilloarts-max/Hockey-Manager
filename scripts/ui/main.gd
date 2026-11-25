@@ -7,8 +7,11 @@ var _current: Control
 func _ready() -> void:
 	theme = AppTheme.build()
 	get_window().theme = theme
-	var bg := ColorRect.new()
-	bg.color = AppTheme.BG
+	# Deep gradient background.
+	var bg := TextureRect.new()
+	bg.texture = AppTheme.gradient(Color("#0e1626"), AppTheme.BG)
+	bg.stretch_mode = TextureRect.STRETCH_SCALE
+	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
 	if not League.load_default():

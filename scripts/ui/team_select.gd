@@ -104,7 +104,7 @@ func _team_card(t: Team) -> Control:
 	txt.add_child(UI.label(t.city, 12, AppTheme.MUTED))
 	txt.add_child(UI.label(t.name, 17, Color.WHITE))
 	var strength := League.team_strength(t.id)
-	txt.add_child(StarRating.make(clampf(roundf((strength - 55.0) / 25.0 * 10.0) / 2.0, 0.5, 5.0), 12))
+	txt.add_child(StarRating.make(clampf(roundf((strength - 78.0) / 9.0 * 10.0) / 2.0, 0.5, 5.0), 12))
 	row.add_child(txt)
 	b.pressed.connect(func(): _select(t.id))
 	_cards[t.id] = b

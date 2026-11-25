@@ -630,7 +630,7 @@ func _try_ai_ai_trade(rng: RandomNumberGenerator) -> void:
 		return
 	var seller: String = sellers[rng.randi_range(0, sellers.size() - 1)]
 	var buyer: String = buyers[rng.randi_range(0, buyers.size() - 1)]
-	var vets := League.nhl_roster(seller).filter(func(p): return p.age >= 26 and p.overall >= 70 and p.contract["years"] <= 2 and not p.is_goalie())
+	var vets := League.nhl_roster(seller).filter(func(p): return p.age >= 26 and p.base_overall >= 70 and p.contract["years"] <= 2 and not p.is_goalie())
 	if vets.is_empty():
 		return
 	vets.sort_custom(func(x, y): return x.overall > y.overall)
@@ -655,11 +655,11 @@ func _try_ai_offer(rng: RandomNumberGenerator) -> void:
 	if targets.is_empty() or rng.randf() < 0.4:
 		match TradeAI.strategy(ai):
 			"contender":
-				targets = mine.filter(func(p): return p.overall >= 74 and p.age >= 24 and p != mine[0])
+				targets = mine.filter(func(p): return p.base_overall >= 74 and p.age >= 24 and p != mine[0])
 			"rebuilding":
-				targets = mine.filter(func(p): return p.age <= 23 and p.potential >= 70)
+				targets = mine.filter(func(p): return p.age <= 23 and p.potential >= 88)
 			_:
-				targets = mine.filter(func(p): return p.overall >= 66 and p.overall <= 82)
+				targets = mine.filter(func(p): return p.base_overall >= 66 and p.base_overall <= 82)
 	if targets.is_empty():
 		return
 	var target = targets[rng.randi_range(0, targets.size() - 1)]

@@ -49,11 +49,18 @@ func _ready() -> void:
 
 	# ---- row 1: main bar in team colors
 	var bar := PanelContainer.new()
-	var bar_style := AppTheme.box(team.primary.darkened(0.55).lerp(AppTheme.BG, 0.25), 0, Color(0, 0, 0, 0), 0, 10, 6)
+	var bar_style := AppTheme.box(Color(0, 0, 0, 0), 0, Color(0, 0, 0, 0), 0, 14, 8)
 	bar_style.border_color = team.accent()
-	bar_style.border_width_bottom = 3
+	bar_style.border_width_bottom = 2
 	bar.add_theme_stylebox_override("panel", bar_style)
 	add_child(bar)
+	# Team-color wash fading into the background.
+	var wash := TextureRect.new()
+	wash.texture = AppTheme.gradient(team.primary.darkened(0.35), Color(AppTheme.BG_2, 0.96), false, true)
+	wash.stretch_mode = TextureRect.STRETCH_SCALE
+	wash.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	wash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(wash)
 	var row := UI.hbox(6)
 	bar.add_child(row)
 	_back_btn = _icon_button("<", func(): _step_history(-1))
@@ -83,12 +90,18 @@ func _ready() -> void:
 	row.add_child(date_box)
 	_continue_btn = Button.new()
 	_continue_btn.text = "Continue   >>"
-	_continue_btn.custom_minimum_size = Vector2(200, 44)
-	_continue_btn.add_theme_font_size_override("font_size", 17)
-	_continue_btn.add_theme_stylebox_override("normal", AppTheme.box(AppTheme.ACCENT, 4))
-	_continue_btn.add_theme_stylebox_override("hover", AppTheme.box(AppTheme.ACCENT.lightened(0.12), 4))
-	_continue_btn.add_theme_stylebox_override("pressed", AppTheme.box(AppTheme.ACCENT.darkened(0.15), 4))
-	_continue_btn.add_theme_stylebox_override("disabled", AppTheme.box(AppTheme.PANEL_2, 4))
+	_continue_btn.custom_minimum_size = Vector2(210, 46)
+	_continue_btn.add_theme_font_override("font", AppTheme.font("menu"))
+	_continue_btn.add_theme_font_size_override("font_size", 20)
+	var cont := AppTheme.box(AppTheme.ACCENT, 10, Color(0, 0, 0, 0), 0, 18, 8)
+	cont.shadow_color = Color(AppTheme.ACCENT, 0.35)
+	cont.shadow_size = 12
+	_continue_btn.add_theme_stylebox_override("normal", cont)
+	var cont_hover := cont.duplicate() as StyleBoxFlat
+	cont_hover.bg_color = AppTheme.ACCENT.lightened(0.12)
+	_continue_btn.add_theme_stylebox_override("hover", cont_hover)
+	_continue_btn.add_theme_stylebox_override("pressed", AppTheme.box(AppTheme.ACCENT.darkened(0.15), 10, Color(0, 0, 0, 0), 0, 18, 8))
+	_continue_btn.add_theme_stylebox_override("disabled", AppTheme.box(AppTheme.PANEL_2, 10, Color(0, 0, 0, 0), 0, 18, 8))
 	_continue_btn.tooltip_text = "Sim to your next game and show the result."
 	_continue_btn.pressed.connect(_on_continue)
 	row.add_child(_continue_btn)
@@ -102,7 +115,10 @@ func _ready() -> void:
 
 	# ---- row 2: sub-tabs
 	var sub := PanelContainer.new()
-	sub.add_theme_stylebox_override("panel", AppTheme.box(AppTheme.BG_2, 0, Color(0, 0, 0, 0), 0, 16, 0))
+	var sub_style := AppTheme.box(Color(AppTheme.BG_2, 0.75), 0, Color(0, 0, 0, 0), 0, 18, 0)
+	sub_style.border_color = AppTheme.BORDER
+	sub_style.border_width_bottom = 1
+	sub.add_theme_stylebox_override("panel", sub_style)
 	add_child(sub)
 	var sub_row := UI.hbox(4)
 	sub.add_child(sub_row)
@@ -346,8 +362,9 @@ func _menu_button(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.toggle_mode = true
-	b.custom_minimum_size = Vector2(0, 44)
-	b.add_theme_font_size_override("font_size", 16)
+	b.custom_minimum_size = Vector2(0, 46)
+	b.add_theme_font_override("font", AppTheme.font("menu"))
+	b.add_theme_font_size_override("font_size", 19)
 	var clear := Color(0, 0, 0, 0)
 	b.add_theme_stylebox_override("normal", AppTheme.box(clear, 4, clear, 0, 14, 6))
 	b.add_theme_stylebox_override("hover", AppTheme.box(Color(1, 1, 1, 0.08), 4, clear, 0, 14, 6))
@@ -362,7 +379,8 @@ func _sub_button(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.toggle_mode = true
-	b.custom_minimum_size = Vector2(0, 36)
+	b.custom_minimum_size = Vector2(0, 38)
+	b.add_theme_font_override("font", AppTheme.font("medium"))
 	var clear := Color(0, 0, 0, 0)
 	b.add_theme_stylebox_override("normal", AppTheme.underline(clear))
 	b.add_theme_stylebox_override("hover", AppTheme.underline(AppTheme.PANEL_3))

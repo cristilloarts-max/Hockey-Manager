@@ -289,6 +289,7 @@ func _info_column() -> Control:
 		["Born", p.birth_date],
 		["Nationality", p.nationality],
 		["NHL games", str(p.nhl_games)],
+		["Drafted", p.draft_text()],
 		["Best role", Roles.get_role(Roles.best(p)).get("name", "-")],
 	]
 	for r in rows:

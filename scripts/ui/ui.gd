@@ -12,13 +12,18 @@ static func label(text: String, font_size: int = 0, color: Variant = null) -> La
 	l.text = text
 	if font_size > 0:
 		l.add_theme_font_size_override("font_size", font_size)
+	# Big text (names, numbers, headings) uses the condensed display face.
+	if font_size >= 20:
+		l.add_theme_font_override("font", AppTheme.font("display_bold" if font_size >= 26 else "display"))
+	elif font_size >= 16:
+		l.add_theme_font_override("font", AppTheme.font("medium"))
 	if color != null:
 		l.add_theme_color_override("font_color", color)
 	return l
 
 
 static func heading(text: String) -> Label:
-	return label(text, 22)
+	return label(text.to_upper(), 30, Color.WHITE)
 
 
 static func button(text: String, on_pressed: Callable) -> Button:
@@ -69,16 +74,16 @@ static func tier_color(tier: String) -> Color:
 
 ## Small uppercase heading used above panels ("TECHNICAL", "FORM"...).
 static func caption(text: String, color: Color = AppTheme.MUTED) -> Label:
-	var l := label(text.to_upper(), 12, color)
-	l.add_theme_constant_override("outline_size", 0)
+	var l := label(text.to_upper(), 11, color)
+	l.add_theme_font_override("font", AppTheme.font("caption"))
 	return l
 
 
 ## A rounded panel with a vertical body. Add content to card.get_meta("body").
 static func card(title: String = "", pad: int = 14, bg: Color = AppTheme.PANEL) -> PanelContainer:
 	var panel := PanelContainer.new()
-	panel.add_theme_stylebox_override("panel", AppTheme.box(bg, 8, Color(0, 0, 0, 0), 0, pad, pad))
-	var content := vbox(8)
+	panel.add_theme_stylebox_override("panel", AppTheme.card_box(bg, 12, pad))
+	var content := vbox(10)
 	panel.add_child(content)
 	if title != "":
 		content.add_child(caption(title))
@@ -93,8 +98,10 @@ static func body(card_panel: PanelContainer) -> VBoxContainer:
 ## A colored rounded tag ("Key Player", "W", "Inj").
 static func pill(text: String, bg: Color, fg: Color = DARK_TEXT, font_size: int = 13) -> PanelContainer:
 	var p := PanelContainer.new()
-	p.add_theme_stylebox_override("panel", AppTheme.box(bg, 5, Color(0, 0, 0, 0), 0, 8, 2))
+	p.add_theme_stylebox_override("panel", AppTheme.box(bg, 99, Color(0, 0, 0, 0), 0, 10, 3))
 	var l := label(text, font_size, fg)
+	if font_size < 20:
+		l.add_theme_font_override("font", AppTheme.font("semibold"))
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	p.add_child(l)
 	p.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN

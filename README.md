@@ -10,6 +10,21 @@ See [docs/GAME_DESIGN.md](docs/GAME_DESIGN.md) for the full design and roadmap.
 2. In the Project Manager, choose **Import** and select `project.godot` in this folder.
 3. Press **F5** (Run Project).
 
+## Ratings scale and look (update)
+
+- **Overalls run 74-99.**
+  - Every player is NHL-calibre: the worst player on any team is 74, a typical regular is about 81, and only about 35 stars reach 90+.
+  - Trades, contracts and lineups use an internal base scale, so their math didn't change.
+- **Young players' potential** blends draft position (recent #1 picks project to about 96-99) with current rating plus expected growth for their age. It's shown as a range that's wider for younger players (for example "90-99" for a 19-year-old phenom).
+- **Fonts:** Inter for text and Barlow Condensed for headings, names and numbers. Both are bundled in `assets/fonts` under the SIL Open Font License, with latin-ext fallbacks for accented names.
+- **A slicker look:**
+  - a deeper slate palette and soft gradient background
+  - 12px rounded cards with hairline borders and drop shadows
+  - fully rounded pills
+  - uppercase, letter-spaced captions and table headers
+  - taller table rows
+  - a team-color gradient in the top bar and a glowing Continue button
+
 ## Phase 3: trades and the trade deadline
 
 - **Trade Center** (Trades menu):
