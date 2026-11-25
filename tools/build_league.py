@@ -350,6 +350,10 @@ def main():
 
     standings = fetch("standings/now", refresh)["standings"]
     div_of = {t["teamAbbrev"]["default"]: (t["conferenceName"], t["divisionName"]) for t in standings}
+    # Real NHL team names -> spoofed names, for season history rows.
+    spoof_team = {t["teamName"]["default"]: "%s %s" % TEAMS[t["teamAbbrev"]["default"]][:2] for t in standings}
+    spoof_team["Utah Hockey Club"] = spoof_team.get("Utah Mammoth", "Utah")
+    spoof_team["Arizona Coyotes"] = "Arizona (NHL)"
 
     # Current rosters.
     roster_players = []
@@ -370,12 +374,29 @@ def main():
         landing = fetch(f"player/{pid}/landing", refresh, cache_name=f"player_{pid}") or {}
         other_pts = other_gp = 0.0
         career_gp = 0
+        history = {}
         for st in landing.get("seasonTotals", []):
             season = str(st.get("season"))
             gp = st.get("gamesPlayed") or 0
             if st.get("gameTypeId") != 2 or gp == 0:
                 continue
             league = st.get("leagueAbbrev", "")
+            # Past seasons for the profile (the current one is replayed in the game).
+            if (league == "NHL" or league in NHLE) and "20222023" < season < CURRENT_SEASON:
+                team_name = (st.get("teamName") or {}).get("default", league)
+                if league == "NHL":
+                    team_name = spoof_team.get(team_name, "NHL")
+                key = (season, team_name)
+                row = history.setdefault(key, {"season": "%s-%s" % (season[:4], season[6:]), "team": team_name,
+                                               "league": league, "gp": 0})
+                row["gp"] += gp
+                if p["positionCode"] == "G":
+                    for k, src in [("w", "wins"), ("l", "losses"), ("otl", "otLosses"), ("so", "shutouts"),
+                                   ("sa", "shotsAgainst"), ("ga", "goalsAgainst")]:
+                        row[k] = row.get(k, 0) + (st.get(src) or 0)
+                else:
+                    for k, src in [("g", "goals"), ("a", "assists"), ("pm", "plusMinus"), ("pim", "pim")]:
+                        row[k] = row.get(k, 0) + (st.get(src) or 0)
             if league == "NHL":
                 career_gp += gp
                 if season == CURRENT_SEASON:
@@ -412,6 +433,7 @@ def main():
         if other_gp >= 10:
             nhle_ppg[pid] = other_pts / other_gp
         p["_draft"] = landing.get("draftDetails") or {}
+        p["_history"] = sorted(history.values(), key=lambda r: (r["season"], r["gp"]), reverse=True)[:3]
         p["_career_gp"] = career_gp
         if n_done % 100 == 0:
             print(f"  career data {n_done}/{len(roster_players)}", flush=True)
@@ -647,6 +669,7 @@ def main():
             "_usage": usage.get(pid, {}),
             "_cur_gs": p.get("_cur_gs", 0),
             "_draft": p.get("_draft", {}),
+            "history": p.get("_history", []),
         })
 
     # Balance D sides per team: if one side is overloaded, players who could go

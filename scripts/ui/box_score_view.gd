@@ -1,35 +1,34 @@
-class_name BoxScoreWindow
-extends AcceptDialog
-## Box score + play-by-play for one of your games.
+class_name BoxScoreView
+extends ScrollContainer
+## Box score + play-by-play for one of your games, as a full page.
+## The live match screen reuses build_content() for its final breakdown.
+
+var key := ""   ## schedule index (regular season) or "p<n>" (playoffs)
 
 
-## key: schedule index (regular season) or "p<n>" (playoffs).
-static func open(parent: Node, key_or_index: Variant) -> void:
-	var key := str(key_or_index)
+func _ready() -> void:
+	horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	if not Game.box_scores.has(key):
+		add_child(UI.label("No box score for that game.", 15, AppTheme.MUTED))
 		return
-	var w := BoxScoreWindow.new()
-	w._build(Game.box_scores[key])
-	parent.add_child(w)
-	w.popup_centered(Vector2i(1060, 760))
+	var content := BoxScoreView.build_content(Game.box_scores[key])
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	add_child(content)
 
 
-func _build(res: Dictionary) -> void:
+static func build_content(res: Dictionary, with_scoreboard: bool = true) -> VBoxContainer:
+	var v := BoxScoreView.new()
+	return v._build(res, with_scoreboard)
+
+
+func _build(res: Dictionary, with_scoreboard: bool) -> VBoxContainer:
 	var home: String = res["home"]
 	var away: String = res["away"]
 	var suffix := "" if res["ot"] == "" else " (%s)" % res["ot"]
-	title = "%s @ %s%s" % [UI.team_name(away), UI.team_name(home), suffix]
-	ok_button_text = "Close"
-
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(1020, 660)
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	add_child(scroll)
 	var box := UI.vbox(12)
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(box)
-
-	box.add_child(_scoreboard(res, away, home, suffix))
+	if with_scoreboard:
+		box.add_child(_scoreboard(res, away, home, suffix))
 
 	# Three stars.
 	var stars_card := UI.card("Three stars")
@@ -66,9 +65,7 @@ func _build(res: Dictionary) -> void:
 		t.custom_minimum_size = Vector2(0, 300)
 		t.setup([["", 10], ["Player", 0], ["Pos", 50], ["G", 40], ["A", 40], ["P", 40], ["+/-", 50], ["SOG", 50],
 			["PIM", 50], ["TOI", 70], ["Rating", 70]])
-		t.row_activated.connect(func(id):
-			hide()
-			Hub.go("Player", int(id)))
+		t.row_activated.connect(func(id): Hub.go("Player", int(id)))
 		var rows := []
 		for pid in res["stats"]:
 			var line: Dictionary = res["stats"][pid]
@@ -109,6 +106,8 @@ func _build(res: Dictionary) -> void:
 	var pbp_card := UI.card("Play-by-play")
 	var pbp := ""
 	for e in res["events"]:
+		if e["type"] == "shot":
+			continue
 		var color := "#b8c2d8"
 		match e["type"]:
 			"goal":
@@ -132,6 +131,8 @@ func _build(res: Dictionary) -> void:
 		pbp += "[color=#55617d]%s[/color]   %s[color=%s]%s[/color]\n" % [stamp, tag, color, text]
 	UI.body(pbp_card).add_child(UI.rich(pbp))
 	box.add_child(pbp_card)
+	queue_free()
+	return box
 
 
 func _scoreboard(res: Dictionary, away: String, home: String, suffix: String) -> Control:

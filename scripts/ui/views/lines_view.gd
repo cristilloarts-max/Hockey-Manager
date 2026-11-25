@@ -180,12 +180,25 @@ func _make_token(slot: Dictionary) -> Control:
 		col.add_child(_center(UI.label("click to pick", 12, AppTheme.MUTED)))
 	else:
 		var tier := p.familiarity_label(spot)
-		var role_key: String = Roles.ranked(p, Roles.for_spot(spot))[0]
+		# His assigned role if it suits this spot, otherwise his best role for it.
+		var spot_roles := Roles.for_spot(spot)
+		var role_key: String = Game.role_of(p)
+		if not spot_roles.has(role_key):
+			role_key = Roles.ranked(p, spot_roles)[0]
 		var role: Dictionary = Roles.get_role(role_key)
 		var tags := UI.hbox(3)
 		tags.alignment = BoxContainer.ALIGNMENT_CENTER
 		tags.add_child(UI.pill(slot.get("label", spot), AppTheme.tier_color(tier), UI.DARK_TEXT, 11))
-		tags.add_child(UI.pill(role["abbr"], AppTheme.PANEL_3, AppTheme.TEXT, 11))
+		var role_btn := Button.new()
+		role_btn.text = role["abbr"] + "  v"
+		role_btn.tooltip_text = "Role: %s (%s). Click to change his role." % [role["name"],
+			Game.role_familiarity_label(Game.role_familiarity(p, role_key))]
+		role_btn.add_theme_font_override("font", AppTheme.font("semibold"))
+		role_btn.add_theme_font_size_override("font_size", 11)
+		role_btn.add_theme_stylebox_override("normal", AppTheme.box(AppTheme.PANEL_3, 99, Color(0, 0, 0, 0), 0, 8, 1))
+		role_btn.add_theme_stylebox_override("hover", AppTheme.box(AppTheme.ACCENT_2, 99, Color(0, 0, 0, 0), 0, 8, 1))
+		role_btn.pressed.connect(_open_role_menu.bind(p.id, spot))
+		tags.add_child(role_btn)
 		col.add_child(tags)
 		var stars := StarRating.make(Roles.stars(p, role_key), 11)
 		stars.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -282,6 +295,32 @@ func _groups_like(arr: Array) -> Array:
 	if is_same(arr, _lineup.goalies):
 		return [[_lineup.goalies]]
 	return [_lineup.forwards, _lineup.defense]
+
+
+## Pick the role (playing style) for a player. Unfamiliar roles cost a little
+## at first; he gets comfortable with games played in them.
+func _open_role_menu(pid: int, spot: String) -> void:
+	var p := League.get_player(pid)
+	if p == null:
+		return
+	var menu := PopupMenu.new()
+	add_child(menu)
+	var keys := Roles.ranked(p, Roles.for_spot(spot))
+	var current := Game.role_of(p)
+	for i in keys.size():
+		var key: String = keys[i]
+		var role := Roles.get_role(key)
+		var fam := Game.role_familiarity(p, key)
+		var stars := "*".repeat(int(Roles.stars(p, key)))
+		menu.add_item("%s%s   %s   (%s)" % ["> " if key == current else "   ", role["name"], stars,
+			Game.role_familiarity_label(fam)], i)
+	menu.id_pressed.connect(func(id):
+		Game.set_role(pid, keys[id])
+		menu.queue_free()
+		_rebuild())
+	menu.popup_hide.connect(func(): menu.queue_free.call_deferred())
+	menu.position = Vector2i(get_global_mouse_position())
+	menu.popup()
 
 
 func _center(c: Control) -> Control:
@@ -403,7 +442,7 @@ func _fill_table() -> void:
 			favg += float(r)
 		if not f.is_empty():
 			favg /= f.size()
-		var best: Dictionary = Roles.get_role(Roles.best(p))
+		var best: Dictionary = Roles.get_role(Game.role_of(p))
 		var line := Game.player_line(p.id)
 		var cell_bg := {5: AppTheme.ovr_color(p.overall)}
 		if slot_bg.a > 0:

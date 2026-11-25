@@ -8,14 +8,14 @@ extends VBoxContainer
 signal quit_to_title
 
 const SECTIONS := {
-	"HOME": ["Overview", "Inbox"],
+	"HOME": ["Overview", "Calendar", "Inbox"],
 	"SQUAD": ["Players", "Lines", "Contracts"],
 	"TACTICS": ["Tactics"],
 	"TRADES": ["Trade Center", "Offers", "Trade History"],
 	"LEAGUE": ["Schedule", "Standings", "Stats", "Playoffs", "Awards"],
 }
 ## Pages that belong to a section without having their own sub-tab.
-const PAGE_SECTION := {"Player": "SQUAD", "Club": "LEAGUE"}
+const PAGE_SECTION := {"Player": "SQUAD", "Club": "LEAGUE", "Match": "HOME", "Box Score": "LEAGUE"}
 
 static var current: Hub
 
@@ -35,6 +35,7 @@ var _continue_btn: Button
 var _back_btn: Button
 var _fwd_btn: Button
 var _more_popup: PopupMenu
+var _calendar: HBoxContainer
 
 
 static func go(page: String, arg: Variant = null) -> void:
@@ -129,10 +130,17 @@ func _ready() -> void:
 	_record_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	sub_row.add_child(_record_label)
 
+	# ---- calendar strip: the next two weeks at a glance
+	var cal_panel := PanelContainer.new()
+	cal_panel.add_theme_stylebox_override("panel", AppTheme.box(Color(AppTheme.BG_2, 0.55), 0, Color(0, 0, 0, 0), 0, 18, 6))
+	add_child(cal_panel)
+	_calendar = UI.hbox(6)
+	cal_panel.add_child(_calendar)
+
 	# ---- page area
 	_content = MarginContainer.new()
 	for side in ["left", "right", "top", "bottom"]:
-		_content.add_theme_constant_override("margin_" + side, 18)
+		_content.add_theme_constant_override("margin_" + side, 14)
 	UI.expand(_content)
 	add_child(_content)
 
@@ -180,6 +188,14 @@ func _show_page() -> void:
 	match _page:
 		"Overview":
 			_view = ClubView.new()
+		"Calendar":
+			_view = CalendarView.new()
+		"Match":
+			_view = MatchView.new()
+		"Box Score":
+			var bs := BoxScoreView.new()
+			bs.key = str(_arg)
+			_view = bs
 		"Club":
 			var cv := ClubView.new()
 			cv.team_id = _arg
@@ -250,6 +266,7 @@ func _show_page() -> void:
 
 func _refresh_bar() -> void:
 	_build_menu()
+	_build_calendar()
 	var team_id := Game.user_team_id
 	var r: Dictionary = Game.standings[team_id]
 	_record_label.text = "%s   %s   %d pts" % [League.get_team(team_id).full_name(), Game.record_string(team_id), r["pts"]]
@@ -264,7 +281,7 @@ func _refresh_bar() -> void:
 		_continue_btn.text = "Season Over"
 		return
 	_date_label.text = Game.date_string()
-	_continue_btn.text = "Continue   >>"
+	_continue_btn.text = "Game Day   >>" if not Game.user_game_today().is_empty() else "Continue   >>"
 	var info := Game.next_game_info()
 	if not info.is_empty():
 		var home: bool = info["home"] == team_id
@@ -275,7 +292,6 @@ func _refresh_bar() -> void:
 		_next_label.text = "%s%s %s %s" % [label + ": " if label != "" else "", "vs" if home else "@", League.get_team(opp).name, when]
 	elif Game.phase == "playoffs":
 		_next_label.text = "Playoffs: %s" % Game.ROUND_NAMES[Game.playoffs["round"] - 1]
-		_continue_btn.text = "Sim Round   >>"
 
 
 # ------------------------------------------------------------------ actions
@@ -309,16 +325,95 @@ func _on_continue() -> void:
 	_do_continue()
 
 
+## One day at a time. On your game days, go to the match screen to play it.
 func _do_continue() -> void:
-	var mine := Game.sim_to_next_game()
+	if not Game.user_game_today().is_empty():
+		navigate("Match")
+		return
+	Game.advance_day()
 	refresh()
-	if not mine.is_empty():
-		BoxScoreWindow.open(self, mine[-1])
+
+
+## Two weeks of days: your games (opponent crest, or result once played).
+func _build_calendar() -> void:
+	if _calendar == null:
+		return
+	for c in _calendar.get_children():
+		c.queue_free()
+	var games := Game.user_calendar()
+	var start := maxi(0, Game.day - 3)
+	var first := Game.date_of(start)
+	var month := UI.vbox(0)
+	month.custom_minimum_size = Vector2(70, 0)
+	month.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	month.add_child(UI.label(Game.MONTHS[int(first["month"]) - 1].to_upper(), 22, Color.WHITE))
+	month.add_child(UI.label(str(first["year"]), 12, AppTheme.MUTED))
+	_calendar.add_child(month)
+	for d in range(start, start + 14):
+		_calendar.add_child(_day_cell(d, games.get(d, {})))
+
+
+func _day_cell(d: int, g: Dictionary) -> Control:
+	var dt := Game.date_of(d)
+	var today := d == Game.day
+	var past := d < Game.day
+	var b := Button.new()
+	b.custom_minimum_size = Vector2(0, 54)
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var bg := Color(1, 1, 1, 0.03) if not today else Color(AppTheme.ACCENT, 0.16)
+	var st := AppTheme.box(bg, 10, AppTheme.ACCENT if today else Color(1, 1, 1, 0.05), 1, 6, 4)
+	b.add_theme_stylebox_override("normal", st)
+	var hv := st.duplicate() as StyleBoxFlat
+	hv.bg_color = Color(1, 1, 1, 0.08)
+	b.add_theme_stylebox_override("hover", hv)
+	b.add_theme_stylebox_override("pressed", hv)
+	var row := UI.hbox(6)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	row.offset_left = 8
+	row.offset_right = -6
+	b.add_child(row)
+	var date := UI.vbox(-2)
+	date.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	date.add_child(UI.label(Game.WEEKDAYS[int(dt["weekday"])].to_upper(), 10, AppTheme.ACCENT if today else AppTheme.MUTED))
+	date.add_child(UI.label(str(dt["day"]), 20, Color.WHITE if not past else AppTheme.MUTED))
+	row.add_child(date)
+	if not g.is_empty():
+		var home: bool = g["home"] == Game.user_team_id
+		var opp: String = g["away"] if home else g["home"]
+		var right := UI.vbox(1)
+		right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		var top := UI.hbox(3)
+		top.add_child(UI.label("vs" if home else "@", 10, AppTheme.MUTED))
+		var crest := TeamCrest.make(opp, 16)
+		top.add_child(crest)
+		right.add_child(top)
+		if g["played"]:
+			var mine: int = g["mine"]
+			var theirs: int = g["theirs"]
+			var code := "W" if mine > theirs else ("OTL" if g.get("ot", "") != "" else "L")
+			right.add_child(UI.pill("%s %d-%d" % [code.substr(0, 1), mine, theirs], AppTheme.result_color(code), UI.DARK_TEXT, 10))
+			b.pressed.connect(func(): navigate("Box Score", g["key"]))
+		else:
+			right.add_child(UI.label(League.get_team(opp).id, 11, Color.WHITE))
+			if today:
+				b.pressed.connect(func(): navigate("Match"))
+			else:
+				b.pressed.connect(func(): navigate("Club", opp))
+		row.add_child(right)
+		b.tooltip_text = "%s %s %s" % [Game.date_string(d), "vs" if home else "@", UI.team_name(opp)]
+	else:
+		b.pressed.connect(func(): navigate("Calendar"))
+	if past:
+		b.modulate = Color(1, 1, 1, 0.7)
+	return b
 
 
 ## The "..." menu changes with the phase of the season.
 func _build_menu() -> void:
 	_more_popup.clear()
+	if Game.phase != "done":
+		_more_popup.add_item("Sim to next game day", 5)
 	if Game.phase == "regular":
 		_more_popup.add_item("Sim to end of regular season", 0)
 	elif Game.phase == "playoffs":
@@ -331,6 +426,9 @@ func _build_menu() -> void:
 
 func _on_menu(id: int) -> void:
 	match id:
+		5:
+			Game.sim_to_game_day()
+			refresh()
 		0:
 			if not _roster_ok():
 				return

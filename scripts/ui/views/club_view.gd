@@ -198,7 +198,7 @@ func _results(team: Team) -> Control:
 		score.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 		col.add_child(score)
 		if Game.box_scores.has(str(i)):
-			tile.pressed.connect(func(): BoxScoreWindow.open(self, i))
+			tile.pressed.connect(func(): Hub.go("Box Score", str(i)))
 		row.add_child(tile)
 	return card
 

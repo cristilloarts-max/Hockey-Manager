@@ -42,6 +42,10 @@ var offers := []             ## incoming AI offers: {id, trade, from, expires}
 var trading_block := {}      ## pid (String) -> true: your players you're shopping
 var flags := {}              ## one-time messages already sent
 var last_traded := {}        ## pid (String) -> day he was last traded
+var assigned_roles := {}     ## pid (String) -> role key you (or the AI) picked
+var role_fam := {}           ## pid (String) -> {role key: 0..100 familiarity}
+var pos_progress := {}       ## pid (String) -> {spot: progress toward +1 familiarity}
+var _best_role := {}         ## cache: pid (String) -> best-fit role (not saved)
 var last_sim_day := -1
 
 
@@ -56,7 +60,7 @@ func new_game(team_id: String, game_seed: int = 0) -> void:
 	phase = "regular"
 	for d in [box_scores, skater_stats, goalie_season, playoff_skaters, playoff_goalies, playoffs,
 			form, condition, rank_history, morale, standings, lineups, tactics, picks, trading_block, flags,
-			last_traded]:
+			last_traded, assigned_roles, role_fam, pos_progress]:
 		d.clear()
 	awards.clear()
 	trade_history.clear()
@@ -199,62 +203,80 @@ func set_roster_status(pid: int, status: String) -> void:
 
 # ------------------------------------------------------------------ simulation
 
-## Plays the next game day. Returns box-score keys of your games played.
-func sim_day() -> Array:
-	if phase == "regular":
-		return _sim_regular_day()
-	if phase == "playoffs":
-		return _sim_playoff_day()
-	return []
-
-
-func _sim_regular_day() -> Array:
-	var next_day := -1
-	for g in schedule:
-		if not g["played"]:
-			next_day = g["day"]
-			break
-	if next_day < 0:
-		return []
-	_recover(next_day)
+## Plays today's games (if any) and moves the calendar forward one day.
+## Returns the box-score keys of your games played today.
+func advance_day() -> Array:
 	var mine := []
-	for i in schedule.size():
-		var g: Dictionary = schedule[i]
-		if g["day"] == next_day and not g["played"]:
-			_play_regular(i)
-			if g["home"] == user_team_id or g["away"] == user_team_id:
-				mine.append(str(i))
-	day = next_day + 1
-	_record_ranks()
-	_trade_activity()
-	if regular_season_over():
-		_on_regular_season_over()
+	if phase == "regular":
+		_recover(day)
+		var played_any := false
+		for i in schedule.size():
+			var g: Dictionary = schedule[i]
+			if g["day"] == day and not g["played"]:
+				_play_regular(i)
+				played_any = true
+				if g["home"] == user_team_id or g["away"] == user_team_id:
+					mine.append(str(i))
+		if played_any:
+			_record_ranks()
+		_trade_activity()
+		day += 1
+		if regular_season_over():
+			_on_regular_season_over()
+	elif phase == "playoffs":
+		if day >= int(playoffs["next_day"]):
+			mine = _sim_playoff_day()
+		else:
+			_recover(day)
+			day += 1
 	day_advanced.emit()
 	return mine
 
 
-## Sims until your next game has been played. In the playoffs, once you're
-## out, it sims one round at a time.
-func sim_to_next_game() -> Array:
+func sim_day() -> Array:
+	return advance_day()
+
+
+## Your game today, or {}: {"home", "away", "label"}.
+func user_game_today() -> Dictionary:
+	if phase == "regular":
+		for g in schedule:
+			if g["day"] == day and not g["played"] and (g["home"] == user_team_id or g["away"] == user_team_id):
+				return {"home": g["home"], "away": g["away"], "label": "Regular season"}
+	elif phase == "playoffs":
+		var info := next_game_info()
+		if not info.is_empty() and int(info["day"]) <= day:
+			return info
+	return {}
+
+
+## Sims day by day and stops on your next game day (before the game), so you
+## can set your lines and watch it. If you're out of the playoffs it sims the
+## rest of the current round.
+func sim_to_game_day() -> void:
 	if phase == "playoffs" and user_out():
-		var round_now: int = playoffs["round"]
-		while phase == "playoffs" and playoffs["round"] == round_now:
-			sim_day()
-		return []
-	while not is_season_over():
-		var mine := sim_day()
-		if not mine.is_empty():
-			return mine
+		sim_playoff_round()
+		return
+	var guard := 0
+	while not is_season_over() and user_game_today().is_empty() and guard < 400:
+		advance_day()
+		guard += 1
 		if phase == "playoffs" and user_out():
-			return []
-	return []
+			return
+
+
+## Kept for older callers: sims through your next game.
+func sim_to_next_game() -> Array:
+	sim_to_game_day()
+	if user_game_today().is_empty():
+		return []
+	return advance_day()
 
 
 ## Sims the rest of the regular season and stops when the playoffs begin.
 func sim_to_end_of_regular_season() -> void:
 	while phase == "regular":
-		_sim_regular_day()
-	day_advanced.emit()
+		advance_day()
 
 
 ## Sims until the current playoff round is over.
@@ -263,15 +285,50 @@ func sim_playoff_round() -> void:
 		return
 	var round_now: int = playoffs["round"]
 	while phase == "playoffs" and playoffs["round"] == round_now:
-		_sim_playoff_day()
-	day_advanced.emit()
+		advance_day()
 
 
 ## Sims the rest of the playoffs.
 func sim_to_end_of_playoffs() -> void:
 	while phase == "playoffs":
-		_sim_playoff_day()
-	day_advanced.emit()
+		advance_day()
+
+
+## Calendar helpers: the date of a day index, and your game on a given day.
+func date_of(d: int) -> Dictionary:
+	var unix := Time.get_unix_time_from_datetime_dict(SEASON_START) + d * 86400
+	return Time.get_datetime_dict_from_unix_time(unix)
+
+
+func day_index(year: int, month: int, dom: int) -> int:
+	var unix := Time.get_unix_time_from_datetime_dict({"year": year, "month": month, "day": dom, "hour": 12})
+	return int(round((unix - Time.get_unix_time_from_datetime_dict(SEASON_START)) / 86400.0))
+
+
+## Your games by day: day -> {"home", "away", "played", "key", "mine", "theirs", "ot"}.
+func user_calendar() -> Dictionary:
+	var out := {}
+	for i in team_games(user_team_id):
+		var g: Dictionary = schedule[i]
+		var home: bool = g["home"] == user_team_id
+		var e := {"home": g["home"], "away": g["away"], "played": g["played"], "key": str(i), "playoff": false}
+		if g["played"]:
+			e["mine"] = g["hg"] if home else g["ag"]
+			e["theirs"] = g["ag"] if home else g["hg"]
+			e["ot"] = g.get("ot", "")
+		out[int(g["day"])] = e
+	for idx in playoffs.get("games", []).size():
+		var pg: Dictionary = playoffs["games"][idx]
+		if pg["home"] != user_team_id and pg["away"] != user_team_id:
+			continue
+		var home: bool = pg["home"] == user_team_id
+		out[int(pg["day"])] = {"home": pg["home"], "away": pg["away"], "played": true, "key": "p%d" % idx,
+			"mine": pg["hg"] if home else pg["ag"], "theirs": pg["ag"] if home else pg["hg"], "ot": pg["ot"], "playoff": true}
+	if phase == "playoffs":
+		var info := next_game_info()
+		if not info.is_empty():
+			out[int(info["day"])] = {"home": info["home"], "away": info["away"], "played": false, "key": "", "playoff": true}
+	return out
 
 
 ## Sets up lineups (goalie rotation, gaps) and plays one game.
@@ -391,8 +448,89 @@ func _add_stats(res: Dictionary, skaters: Dictionary, goalies: Dictionary) -> vo
 			s["so"] += 1
 
 
+# ------------------------------------------------------------------ roles
+
+## The role a player plays: the one assigned to him, or his best fit.
+func role_of(p) -> String:
+	var key := str(p.id)
+	if assigned_roles.has(key):
+		return assigned_roles[key]
+	if not _best_role.has(key):
+		_best_role[key] = Roles.best(p)
+	return _best_role[key]
+
+
+func set_role(pid: int, role_key: String) -> void:
+	assigned_roles[str(pid)] = role_key
+
+
+## How comfortable he is in a role (0-100). Natural fits start high; other
+## roles start lower and grow with games played in them.
+func role_familiarity(p, role_key: String) -> float:
+	var key := str(p.id)
+	var stored: Dictionary = role_fam.get(key, {})
+	if stored.has(role_key):
+		return float(stored[role_key])
+	var ranked := Roles.ranked(p)
+	if not ranked.is_empty() and ranked[0] == role_key:
+		return 100.0
+	return clampf(Roles.stars(p, role_key) * 16.0, 20.0, 85.0)
+
+
+func role_familiarity_label(v: float) -> String:
+	if v >= 90:
+		return "Natural"
+	if v >= 70:
+		return "Comfortable"
+	if v >= 50:
+		return "Learning"
+	return "Unfamiliar"
+
+
+## After each game: +3 familiarity in the role he played, and slow growth at
+## the position he played (about +1 familiarity every 4 games).
+func _grow_familiarity(res: Dictionary) -> void:
+	for t in [res["home"], res["away"]]:
+		var l: Lineup = lineups.get(t)
+		if l == null:
+			continue
+		var spots := {}
+		for line in l.forwards:
+			for s in 3:
+				spots[line[s]] = Lineup.FWD_SLOTS[s]
+		for pair in l.defense:
+			for s in 2:
+				spots[pair[s]] = Lineup.D_SLOTS[s]
+		for pid in spots:
+			if pid == 0 or not res["stats"].has(pid):
+				continue
+			var p := League.get_player(pid)
+			if p == null:
+				continue
+			var key := str(pid)
+			var role := role_of(p)
+			var fam: Dictionary = role_fam.get(key, {})
+			fam[role] = minf(100.0, role_familiarity(p, role) + 3.0)
+			role_fam[key] = fam
+			var spot: String = spots[pid]
+			if p.familiarity_at(spot) < 20:
+				var prog: Dictionary = pos_progress.get(key, {})
+				var v: float = float(prog.get(spot, 0.0)) + 0.25
+				if v >= 1.0:
+					v -= 1.0
+					p.familiarity[spot] = p.familiarity_at(spot) + 1
+					if p.familiarity[spot] >= 14 and not p.comfortable.has(spot) and spot != p.position:
+						p.comfortable.append(spot)
+						if t == user_team_id:
+							add_message("%s is getting comfortable at %s" % [p.full_name(), Player.SPOT_NAMES.get(spot, spot)],
+								"After playing there regularly he's now Accomplished at %s." % Player.SPOT_NAMES.get(spot, spot))
+				prog[spot] = v
+				pos_progress[key] = prog
+
+
 ## Form, condition and morale after a game.
 func _update_players(res: Dictionary, winner: String, skaters: Dictionary, goalies: Dictionary) -> void:
+	_grow_familiarity(res)
 	var played := {}
 	for group in ["stats", "goalies"]:
 		for pid in res[group]:
@@ -962,6 +1100,7 @@ func save_game() -> bool:
 		"playoffs": playoffs, "awards": awards, "inbox": inbox,
 		"picks": picks, "trade_history": trade_history, "offers": offers,
 		"trading_block": trading_block, "flags": flags, "last_traded": last_traded,
+		"assigned_roles": assigned_roles, "role_fam": role_fam, "pos_progress": pos_progress,
 		"form": form, "morale": morale, "condition": condition, "rank_history": rank_history,
 		"last_sim_day": last_sim_day,
 		"lineups": _map_values(lineups, func(l): return l.to_dict()),
@@ -1001,6 +1140,9 @@ func load_game() -> bool:
 	trading_block = data.get("trading_block", {})
 	flags = _intify(data.get("flags", {}))
 	last_traded = _intify(data.get("last_traded", {}))
+	assigned_roles = data.get("assigned_roles", {})
+	role_fam = data.get("role_fam", {})
+	pos_progress = data.get("pos_progress", {})
 	inbox = _intify(data["inbox"])
 	form = data.get("form", {})
 	morale = _intify(data.get("morale", {}))

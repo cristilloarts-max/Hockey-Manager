@@ -133,7 +133,7 @@ func _my_games(s: Dictionary) -> Control:
 		var b := Button.new()
 		b.text = "G%d  %s %d-%d%s" % [g["game"], code, mine, theirs, "" if g["ot"] == "" else " OT"]
 		b.add_theme_stylebox_override("normal", AppTheme.box(Color(AppTheme.result_color(code), 0.25), 6))
-		b.pressed.connect(func(): BoxScoreWindow.open(self, "p%d" % idx))
+		b.pressed.connect(func(): Hub.go("Box Score", "p%d" % idx))
 		row.add_child(b)
 	if s["games"].is_empty():
 		row.add_child(UI.label("Game 1 is next.", 14, AppTheme.MUTED))

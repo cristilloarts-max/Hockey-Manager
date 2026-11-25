@@ -20,7 +20,7 @@ func _ready() -> void:
 	table.row_activated.connect(func(idx):
 		var g: Dictionary = Game.schedule[int(idx)]
 		if g["played"]:
-			BoxScoreWindow.open(self, int(idx))
+			Hub.go("Box Score", str(int(idx)))
 		else:
 			Hub.go("Club", g["away"] if g["home"] == team_id else g["home"]))
 	add_child(table)

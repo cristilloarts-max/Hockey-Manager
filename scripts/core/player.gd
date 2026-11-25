@@ -51,6 +51,7 @@ var potential: int = 74            ## projected peak on the same scale
 var base_overall: int = 50         ## wider internal scale used by trades and lineups
 var base_potential: int = 50
 var draft: Dictionary = {}         ## {year, round, pick} if drafted
+var history: Array = []            ## past real seasons: {season, team, league, gp, g, a, pm, pim | w, l, otl, so, sa, ga}
 var attributes: Dictionary = {}    ## core ratings the sim reads, name -> 1..20
 var details: Dictionary = {}       ## detailed attributes shown in the game, name -> 1..20
 var contract: Dictionary = {}      ## cap_hit, years, elc, expiry_status, no_trade_clause
@@ -77,6 +78,7 @@ static func from_dict(d: Dictionary) -> Player:
 	p.potential = int(d["potential"])
 	p.base_overall = int(d.get("base_overall", p.overall))
 	p.base_potential = int(d.get("base_potential", p.potential))
+	p.history = d.get("history", [])
 	var dr: Dictionary = d.get("draft", {})
 	for k in dr:
 		p.draft[k] = int(dr[k]) if dr[k] != null else 0
@@ -115,7 +117,7 @@ func to_dict() -> Dictionary:
 		"shoots": shoots, "number": number, "birth_date": birth_date, "age": age,
 		"nationality": nationality, "height_cm": height_cm, "weight_kg": weight_kg,
 		"nhl_games": nhl_games, "overall": overall, "potential": potential,
-		"base_overall": base_overall, "base_potential": base_potential, "draft": draft,
+		"base_overall": base_overall, "base_potential": base_potential, "draft": draft, "history": history,
 		"attributes": attributes,
 		"details": details,
 		"positions": {"preferred": position, "comfortable": comfortable,

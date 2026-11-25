@@ -46,6 +46,28 @@ const GOALIE := {
 }
 
 
+## How a role changes a player's game: share of shots, share of assists,
+## and defensive play (multipliers around 1.0).
+const EFFECTS := {
+	"sniper": {"shots": 1.2, "assists": 0.9},
+	"playmaker": {"shots": 0.85, "assists": 1.25},
+	"power_forward": {"shots": 1.05, "assists": 0.95, "defense": 1.01},
+	"two_way": {"shots": 0.95, "defense": 1.04},
+	"net_front": {"shots": 1.1, "assists": 0.85},
+	"grinder": {"shots": 0.85, "assists": 0.85, "defense": 1.03},
+	"enforcer": {"shots": 0.7, "assists": 0.75, "defense": 1.01},
+	"offensive_d": {"shots": 1.15, "assists": 1.15, "defense": 0.97},
+	"two_way_d": {},
+	"puck_mover": {"assists": 1.15, "defense": 0.99},
+	"stay_at_home": {"shots": 0.75, "assists": 0.8, "defense": 1.05},
+	"shutdown": {"shots": 0.8, "assists": 0.9, "defense": 1.04},
+}
+
+
+static func effect(role_key: String, kind: String) -> float:
+	return float(EFFECTS.get(role_key, {}).get(kind, 1.0))
+
+
 static func for_player(p) -> Dictionary:
 	if p.is_goalie():
 		return GOALIE

@@ -43,6 +43,7 @@ var clock := 0           ## seconds elapsed in regulation/OT
 var period := 1
 var period_scores := []
 var game_over := false
+var _mods := {}             ## pid -> {"shots", "assists", "defense", "fam"} from roles
 var ot_kind := ""
 
 
@@ -97,6 +98,19 @@ func _make_side(team, lineup, tac) -> Dictionary:
 		pk_units.append(unit)
 	var goalie = League.get_player(lineup.goalies[0])
 	var all_ids: Array = lineup.dressed_ids()
+	for u in [lineup.power_play, lineup.penalty_kill]:
+		for unit in u:
+			all_ids.append_array(unit.filter(func(x): return x != 0))
+	for pid in all_ids:
+		if _mods.has(pid):
+			continue
+		var rp = League.get_player(pid)
+		if rp == null or rp.is_goalie():
+			continue
+		var role: String = Game.role_of(rp)
+		_mods[pid] = {"shots": Roles.effect(role, "shots"), "assists": Roles.effect(role, "assists"),
+			"defense": Roles.effect(role, "defense"),
+			"fam": 0.95 + 0.05 * Game.role_familiarity(rp, role) / 100.0}
 	for pid in all_ids:
 		var p = League.get_player(pid)
 		if p == null:
@@ -369,7 +383,8 @@ func _unit_rating(unit: Array, kind: String, late: bool) -> float:
 	for e in unit:
 		var p = e["p"]
 		var spot: String = e["spot"]
-		var v: float = skater_attack(p, spot) if kind == "attack" else skater_defense(p, spot)
+		var v: float = skater_attack(p, spot) if kind == "attack" else skater_defense(p, spot) * _mod(p.id, "defense")
+		v *= _mod(p.id, "fam")
 		# Strong-side preference on his strong side: cleaner breakouts and wall play.
 		if Player.spot_side(spot) != "" and not p.prefers_off_side and not p.is_off_side_at(spot):
 			v *= 1.02
@@ -395,7 +410,7 @@ func _shot(i: int, units: Array, skaters: Array, t_in_period: int, ot: bool) -> 
 	var pp_threat: int = s["tac"].get_value("power_play.threat")
 	for e in unit:
 		var p = e["p"]
-		var w: float = pow(p.shots60(), SHOT_WEIGHT_EXP)
+		var w: float = pow(p.shots60(), SHOT_WEIGHT_EXP) * _mod(p.id, "shots")
 		if pp and pp_threat == 0 and _one_timer_bonus(e):
 			w *= 1.25
 		elif pp and pp_threat == 1 and e["spot"] in ["LD", "RD"]:
@@ -407,6 +422,7 @@ func _shot(i: int, units: Array, skaters: Array, t_in_period: int, ot: bool) -> 
 	var shooter = shooter_e["p"]
 	s["shots"] += 1
 	_sl(shooter, s["team"].id)["shots"] += 1
+	_log(i, "shot", "", t_in_period)
 
 	var empty_net: bool = opp["goalie_pulled"]
 	var goalie = opp["goalie"]
@@ -503,7 +519,7 @@ func _goal(i: int, unit: Array, opp_unit: Array, shooter_e: Dictionary, shot_typ
 	for e in unit:
 		if e["p"] != shooter:
 			helpers.append(e["p"])
-			weights.append(pow(e["p"].a60(), ASSIST_EXP))
+			weights.append(pow(e["p"].a60(), ASSIST_EXP) * _mod(e["p"].id, "assists"))
 	var assists := []
 	if not helpers.is_empty() and rng.randf() < 0.93:
 		var k := _weighted_index(weights)
@@ -623,6 +639,11 @@ func _finish(kind: String) -> void:
 
 # ------------------------------------------------------------------ helpers
 
+func _mod(pid: int, kind: String) -> float:
+	var m: Dictionary = _mods.get(pid, {})
+	return float(m.get(kind, 1.0))
+
+
 ## The game stat line for a skater, created on first use (e.g. a PP specialist
 ## who isn't on one of the four lines).
 func _sl(p, team_id: String) -> Dictionary:
@@ -667,7 +688,17 @@ func _log(side: int, kind: String, text: String, t_in_period: int = -1) -> void:
 	var label := "OT" if period > 3 and not playoff else ("OT%d" % (period - 3) if period > 3 else "P%d" % period)
 	if kind == "shootout":
 		label = "SO"
-	events.append({"period": label, "time": stamp, "team": team_id, "type": kind, "text": text})
+	# Absolute game time in seconds (for the live match replay).
+	var t := float(clock)
+	if kind == "shootout":
+		t = 3900.0 + events.filter(func(e): return e["type"] == "shootout").size()
+	elif t_in_period >= 0:
+		var base := 3600 if (period > 3 and not playoff) else (period - 1) * 1200
+		t = float(base + t_in_period)
+	elif kind == "end":
+		t = period * 1200.0
+	events.append({"period": label, "time": stamp, "team": team_id, "type": kind, "text": text, "t": t,
+		"score": [sides[0]["goals"], sides[1]["goals"]], "pnum": period})
 
 
 ## Football Manager-style match ratings (about 6.0-9.5; 6.8 is a solid night).

@@ -10,6 +10,28 @@ See [docs/GAME_DESIGN.md](docs/GAME_DESIGN.md) for the full design and roadmap.
 2. In the Project Manager, choose **Import** and select `project.godot` in this folder.
 3. Press **F5** (Run Project).
 
+## Game days, live matches, roles and the new player page
+
+- **Day by day.**
+  - **Continue** moves the calendar forward exactly one day, so you can trade and adjust your lines between games.
+  - A **calendar strip** under the menus shows the next two weeks, with each opponent's crest or the result. HOME > **Calendar** shows a month view.
+  - "Sim to next game day" (in the "..." menu) stops right before your next game.
+- **Live match screen.** On your game days Continue opens the match:
+  - **Pre-game:** the matchup in both teams' colors, with shortcuts to Lines and Tactics.
+  - **Live play:** press Play and the clock runs at 1x-8x speed, while the score, shots on goal and play-by-play update and a "GOAL!" banner flashes in the scorer's colors.
+  - **Intermissions:** each period ends with a summary card and a button to start the next period.
+  - **Final:** the full breakdown on the same screen, plus scores from around the league that day.
+  - Box scores are now pages, not popups.
+- **Roles you can change.**
+  - On the Lines screen, click the role tag under a jersey to make a grinder a sniper, a two-way forward a playmaker, and so on.
+  - Roles change how he plays: snipers shoot more, playmakers set up more, and defensive roles defend better.
+  - Role familiarity grows with every game in the role (Unfamiliar -> Learning -> Comfortable -> Natural).
+  - Position familiarity also grows with games played at a new spot.
+- **Player page (one screen, no scrolling):**
+  - **Header:** a silhouette in his team's sweater, bio, height and weight, a generated scouting description, current and potential ability stars, status, and a draft badge.
+  - **Attributes:** Technical / Mental / Physical columns with segmented color bars.
+  - **Bottom row:** positions and play styles, current team, contract, and this season plus his real previous seasons (including junior, college and European leagues).
+
 ## Ratings scale and look (update)
 
 - **Overalls run 74-99.**
