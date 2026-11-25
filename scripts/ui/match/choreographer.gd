@@ -21,7 +21,8 @@ var actions: Array = []
 var penalties: Array = []
 var _res: Dictionary
 var _teams := ["", ""]
-var _shifts: Array = []      ## [t, home units, away units]
+var _shifts: Array = []      ## [t, home units, away units] as the sim played them
+var _vis_shifts: Array = []  ## [t, home units, away units] as shown: staggered, realistic changes
 var _goalies := [0, 0]
 var _period_ends: Array = []
 var _rng := RandomNumberGenerator.new()
@@ -68,6 +69,7 @@ func build(res: Dictionary, period_ends: Array) -> void:
 				_play_to_shot(k)
 		_filler(end)
 		start = end
+	_build_visible_shifts()
 
 
 # ------------------------------------------------------------------ queries
@@ -115,6 +117,124 @@ func on_ice(side: int, t: float) -> Array:
 		else:
 			hi = mid - 1
 	return _shifts[lo][1 + side]
+
+
+## Who's shown on the ice: the sim's units, but with changes staggered the
+## way teams really change (see _build_visible_shifts).
+func visible_on_ice(side: int, t: float) -> Array:
+	if _vis_shifts.is_empty():
+		return on_ice(side, t)
+	var lo := 0
+	var hi := _vis_shifts.size() - 1
+	while lo < hi:
+		var mid := (lo + hi + 1) / 2
+		if float(_vis_shifts[mid][0]) <= t:
+			lo = mid
+		else:
+			hi = mid - 1
+	return _vis_shifts[lo][1 + side]
+
+
+## Line changes, player by player:
+##  - at a stoppage, everyone due for a change goes;
+##  - D change when their team carries the puck into the offensive zone;
+##  - forwards change on the way back through the neutral zone, or once their
+##    team has the puck past center;
+##  - nobody changes while the puck is in his own zone (unless the shift has
+##    dragged on 30+ seconds);
+##  - one player per team at a time, each after a random few seconds, so shifts
+##    run a little short or long;
+##  - a player about to make a play jumps on in time, and the puck carrier
+##    stays on until he gets rid of it.
+func _build_visible_shifts() -> void:
+	_vis_shifts.clear()
+	if _shifts.is_empty():
+		return
+	var involved := {}
+	for a in actions:
+		for key in ["carrier", "target"]:
+			var pid := int(a[key])
+			if pid != 0:
+				if not involved.has(pid):
+					involved[pid] = []
+				involved[pid].append(float(a["t0"]))
+	var cur := [{}, {}]
+	for side in 2:
+		for e in _shifts[0][1 + side]:
+			cur[side][e[1]] = int(e[0])
+	_vis_shifts.append([0.0, _units(cur[0]), _units(cur[1])])
+	var pending := [{}, {}]
+	var delay := [{}, {}]
+	var last_change := [-99.0, -99.0]
+	var end := float(_period_ends[-1]) + 2.0
+	var t := 0.0
+	while t < end:
+		t += 0.5
+		var st := state_at(t)
+		var stopped: bool = st["type"] in ["whistle", "faceoff", "goal"]
+		var changed := false
+		for side in 2:
+			var want := {}
+			for e in on_ice(side, t):
+				want[e[1]] = int(e[0])
+			var have: Dictionary = cur[side]
+			var spots := want.keys()
+			for k in have.keys():
+				if not spots.has(k):
+					spots.append(k)
+			for spot in spots:
+				var w := int(want.get(spot, 0))
+				var h := int(have.get(spot, 0))
+				if w == h:
+					pending[side].erase(spot)
+					continue
+				if not pending[side].has(spot):
+					pending[side][spot] = t
+					delay[side][spot] = _rng.randf_range(0.5, 7.0)
+				var waited: float = t - float(pending[side][spot])
+				var go := stopped or _soon(involved, w, t, 3.0) or waited > 30.0
+				if not go and waited >= float(delay[side][spot]) and t - float(last_change[side]) >= 1.2:
+					go = _can_change(side, spot, st, t)
+				# The puck carrier (or a player about to touch it) finishes the play first.
+				if go and h != 0 and not stopped and (int(st["carrier"]) == h or _soon(involved, h, t - 0.5, 1.5)):
+					go = false
+				if go:
+					if w == 0:
+						have.erase(spot)
+					else:
+						have[spot] = w
+					pending[side].erase(spot)
+					last_change[side] = t
+					changed = true
+		if changed:
+			_vis_shifts.append([t, _units(cur[0]), _units(cur[1])])
+
+
+func _units(spots: Dictionary) -> Array:
+	var out := []
+	for spot in spots:
+		out.append([spots[spot], spot])
+	return out
+
+
+## True if `pid` touches the puck between t and t + window.
+func _soon(involved: Dictionary, pid: int, t: float, window: float) -> bool:
+	if pid == 0 or not involved.has(pid):
+		return false
+	var times: Array = involved[pid]
+	var i := times.bsearch(t)
+	return i < times.size() and float(times[i]) <= t + window
+
+
+func _can_change(side: int, spot: String, st: Dictionary, t: float) -> bool:
+	var puck: Vector2 = st["puck"]
+	var fx := puck.x * dir_for(side, period_at(t))
+	var poss: int = st["side"]
+	if fx < -BLUE_X:
+		return false                       # stuck in their own zone
+	if spot == "LD" or spot == "RD":
+		return poss == side and fx > BLUE_X   # D go when the rush gets in deep
+	return (poss != side and fx < BLUE_X) or (poss == side and fx > 0.0)
 
 
 func goalie(side: int) -> int:

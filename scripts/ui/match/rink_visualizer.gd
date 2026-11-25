@@ -61,7 +61,7 @@ func update(t: float, dt: float) -> void:
 			_boxed[int(pen["pid"])] = pen
 	var seen := {}
 	for side in 2:
-		var units: Array = chor.on_ice(side, t).filter(func(e): return not _boxed.has(int(e[0])))
+		var units: Array = chor.visible_on_ice(side, t).filter(func(e): return not _boxed.has(int(e[0])))
 		_note_line_change(side, units)
 		var targets := _targets(side, units, puck)
 		for pid in targets:
@@ -133,12 +133,22 @@ func _box_spot(side: int) -> Vector2:
 
 ## Announce line changes: "on the fly" during play, plain at stoppages.
 func _note_line_change(side: int, units: Array) -> void:
-	var key := ",".join(units.map(func(e): return str(e[0])))
+	var ids := units.map(func(e): return int(e[0]))
+	var key := ",".join(ids.map(func(x): return str(x)))
 	if _last_units[side] != "" and key != _last_units[side]:
+		var old: Array = Array(_last_units[side].split(",")).map(func(x): return int(x))
+		var on := ids.filter(func(x): return not old.has(x))
+		var off := old.filter(func(x): return not ids.has(x))
 		var stoppage: bool = _state.get("type", "") in ["whistle", "faceoff", "goal"]
 		var team = League.get_team(teams[side])
-		note = "%s %s" % [team.name if team else "", "line change" if stoppage else "change on the fly"]
-		note_until = _t + 4.0
+		var parts := []
+		for i in on.size():
+			var pin := League.get_player(on[i])
+			var pout := League.get_player(off[i]) if i < off.size() else null
+			parts.append("#%s on%s" % [str(pin.number) if pin else "?", (" for #%s" % pout.number) if pout else ""])
+		if not parts.is_empty():
+			note = "%s %s: %s" % [team.name if team else "", "change" if stoppage else "change on the fly", ", ".join(parts)]
+			note_until = _t + 4.0
 	_last_units[side] = key
 
 
@@ -153,7 +163,7 @@ func _targets(side: int, units: Array, puck: Vector2) -> Dictionary:
 	var px := puck.x * d                 # puck in this team's attack frame
 	var py := -puck.y * d
 	var mine := units.size()
-	var theirs: int = chor.on_ice(1 - side, _t).filter(func(e): return not _boxed.has(int(e[0]))).size()
+	var theirs: int = chor.visible_on_ice(1 - side, _t).filter(func(e): return not _boxed.has(int(e[0]))).size()
 	var tac: Tactics = Game.tactics.get(teams[side])
 	var spots := {}
 	var stopped := kind in ["faceoff", "whistle", "goal"]
@@ -174,9 +184,10 @@ func _targets(side: int, units: Array, puck: Vector2) -> Dictionary:
 				f = _pk_spot(spot, tac.get_value("penalty_kill.formation") if tac else 0, py)
 				f += _sway(pid, 2.5)
 			else:
-				f = _defend_spot(spot, px, py, tac)
 				if px < -25.0:
-					f = _cover(side, spot, f, tac, d)
+					f = _dzone_area(side, spot, pid, px, py, tac, d)
+				else:
+					f = _defend_spot(spot, px, py, tac)
 		else:
 			f = _faceoff_spot(spot, px, py)
 		if not stopped:
@@ -215,6 +226,104 @@ func _targets(side: int, units: Array, puck: Vector2) -> Dictionary:
 	return out
 
 
+func units_pid_hash(spot: String, side: int) -> int:
+	return hash(spot) + side * 7
+
+
+## A target inside a player's area: his area's center, pulled toward what he
+## should be doing (`attract`, weight w), plus a slow personal wander. Kept in
+## the area (with a little give so he can cross over when the play needs it).
+func _in_area(area: Rect2, attract: Vector2, w: float, seed_val: int) -> Vector2:
+	var ph := float(seed_val % 997) * 0.53
+	var c := area.get_center()
+	var wander := Vector2(sin(_t * 0.45 + ph) * area.size.x * 0.32, cos(_t * 0.38 + ph * 1.3) * area.size.y * 0.32)
+	var p := (c + wander).lerp(attract, w)
+	var give := 5.0
+	return Vector2(clampf(p.x, area.position.x - give, area.end.x + give), clampf(p.y, area.position.y - give, area.end.y + give))
+
+
+## Offensive zone: wingers own their wing, the center the middle, the D the
+## points. The puck-side winger battles low, the weak-side winger slides to
+## the back door, D slide along the line toward the puck. Now and then the
+## center and the strong-side winger swap areas.
+func _ozone_area(spot: String, px: float, py: float, tac: Tactics, side: int, seed_val: int) -> Vector2:
+	var structure := tac.get_value("o_zone.structure") if tac else 0
+	var activate := tac.get_value("o_zone.d_activation") if tac else 1
+	var s := signf(py + 0.01)
+	var puck := Vector2(px, py)
+	var areas := {
+		"LW": Rect2(55, 6, 34, 30), "RW": Rect2(55, -36, 34, 30), "C": Rect2(60, -14, 26, 28),
+		"LD": Rect2(27, 4, 12, 30), "RD": Rect2(27, -34, 12, 30),
+	}
+	if activate >= 2:
+		var strong_d := "LD" if s > 0 else "RD"
+		areas[strong_d] = Rect2(27, 6 * s if s > 0 else -36, 34, 30)
+	# Occasional C <-> strong-side winger swap (a few seconds at a time).
+	var strong_w := "LW" if s > 0 else "RW"
+	var swap := hash([int((_t + float(side)) / 6.0), side]) % 4 == 0
+	var my := spot
+	if swap and spot == "C":
+		my = strong_w
+	elif swap and spot == strong_w:
+		my = "C"
+	var area: Rect2 = areas.get(my, areas["C"])
+	var attract := area.get_center()
+	var w := 0.35
+	match my:
+		"LW", "RW":
+			var mine_side := 1.0 if my == "LW" else -1.0
+			if signf(py + 0.01) == mine_side:
+				attract = puck + Vector2(-6, -mine_side * 4)       # battle for it / support low
+				w = 0.55
+			else:
+				attract = Vector2(82, mine_side * 5)              # back door
+				if structure == 2:
+					attract = Vector2(68, -mine_side * 10)         # overload: drift to the strong side
+				w = 0.45
+		"C":
+			attract = Vector2(86, 0) if structure == 1 else Vector2(72, py * 0.3)
+			w = 0.6 if structure == 1 else 0.4
+		"LD", "RD":
+			attract = Vector2(33, py * 0.7)
+			w = 0.4
+	return _in_area(area, attract, w, seed_val + int(_t / 30.0))
+
+
+## Defensive zone: D take the low corners and the net front, the center the
+## low slot, wingers their side's point. Each shadows the attacker in his area
+## (tighter with man-to-man), and whoever is closest goes after the puck.
+func _dzone_area(side: int, spot: String, pid: int, px: float, py: float, tac: Tactics, d: float) -> Vector2:
+	var areas := {
+		"LD": Rect2(-89, 0, 25, 24), "RD": Rect2(-89, -24, 25, 24), "C": Rect2(-82, -14, 24, 28),
+		"LW": Rect2(-62, 6, 24, 30), "RW": Rect2(-62, -36, 24, 30),
+	}
+	var area: Rect2 = areas.get(spot, areas["C"])
+	var system := tac.get_value("d_zone.system") if tac else 0
+	var w: float = [0.5, 0.85, 0.65, 0.55][clampi(system, 0, 3)]
+	# The attacker inside (or nearest to) this area.
+	var best := Vector2.INF
+	var best_d := INF
+	for e in chor.visible_on_ice(1 - side, _t):
+		var mid := int(e[0])
+		if not _pos.has(mid):
+			continue
+		var mp: Vector2 = _pos[mid]
+		var mf := Vector2(mp.x * d, -mp.y * d)
+		var dd := mf.distance_to(area.get_center())
+		if dd < best_d:
+			best_d = dd
+			best = mf
+	var attract := Vector2(-80, 0)
+	if best != Vector2.INF:
+		attract = best + (Vector2(-89, 0) - best).normalized() * 5.0   # goal side of his man
+	if area.grow(4).has_point(Vector2(px, py)):
+		attract = Vector2(px, py)                                      # puck in my area: go get it
+		w = 0.7
+	if system == 3:
+		attract = attract.lerp(Vector2(-78, 0), 0.3)                   # swarm collapses
+	return _in_area(area, attract, w, pid)
+
+
 ## Small personal drift so nobody ever stands still.
 func _sway(pid: int, amp: float) -> Vector2:
 	var ph := float(pid % 997) * 0.37
@@ -227,7 +336,7 @@ func _cover(side: int, spot: String, zone_spot: Vector2, tac: Tactics, d: float)
 	var assign := {"LD": "RW", "RD": "LW", "C": "C", "LW": "RD", "RW": "LD"}
 	var want: String = assign.get(spot, "C")
 	var man := 0
-	for e in chor.on_ice(1 - side, _t):
+	for e in chor.visible_on_ice(1 - side, _t):
 		if e[1] == want:
 			man = int(e[0])
 	if man == 0 or not _pos.has(man):
@@ -265,34 +374,7 @@ func _faceoff_spot(spot: String, px: float, py: float) -> Vector2:
 func _attack_spot(spot: String, px: float, py: float, tac: Tactics, idx: int, side: int) -> Vector2:
 	var structure := tac.get_value("o_zone.structure") if tac else 0
 	if px > 25.0:
-		var s := signf(py + 0.01)
-		var ph := float(side) * 1.6
-		if spot == "LD" or spot == "RD":
-			var base_y := 17.0 if spot == "LD" else -17.0
-			var activate := tac.get_value("o_zone.d_activation") if tac else 1
-			var strong := signf(base_y) == s
-			# Active D sneak down the wall on the strong side every other rotation.
-			if activate >= 2 and strong and int((_t + ph) / 3.2) % 2 == 1:
-				return Vector2(56, s * 27)
-			return Vector2(33 + sin(_t * 0.7 + ph) * 3.0, base_y + sin(_t * 0.9 + ph + base_y) * 6.0)
-		var anchors: Array
-		match structure:
-			0:
-				anchors = [Vector2(82, s * 25), Vector2(70, s * 4), Vector2(62, -s * 20)]
-			1:
-				anchors = [Vector2(84, s * 6), Vector2(84, -s * 6), Vector2(64, s * 22)]
-			2:
-				anchors = [Vector2(80, s * 28), Vector2(64, s * 20), Vector2(72, s * 6)]
-			_:
-				anchors = [Vector2(78, s * 22), Vector2(70, 0), Vector2(62, -s * 22)]
-		var order := {"C": 0, "LW": 1, "RW": 2}
-		var k: int = order.get(spot, idx % 3)
-		var rot := int((_t + ph) / 3.2)
-		var target: Vector2 = anchors[(k + rot) % 3]
-		# One forward always comes to support the puck carrier.
-		if (k + rot) % 3 == 1 and Vector2(px, py).distance_to(target) > 18.0:
-			target = target.lerp(Vector2(px - 8, py * 0.5), 0.45)
-		return target
+		return _ozone_area(spot, px, py, tac, side, int(units_pid_hash(spot, side)))
 	elif px > -25.0:
 		# Rush through the neutral zone; non-carriers stay onside until the puck is in.
 		var lane := sin(_t * 0.5 + float(side)) * 4.0
@@ -541,7 +623,7 @@ func _draw() -> void:
 func _belongs(pid: int, side: int) -> bool:
 	if pid == chor.goalie(side):
 		return true
-	for e in chor.on_ice(side, _t):
+	for e in chor.visible_on_ice(side, _t):
 		if int(e[0]) == pid:
 			return true
 	return false
