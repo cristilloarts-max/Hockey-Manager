@@ -330,4 +330,11 @@ Tactics data structures are defined in phase 1, so the sim reads them from the s
   - drag-and-drop lines
   - stat calibration
   - playoffs, champion and awards
-- **Next:** the set play creator (section 3), then trades.
+- **Phase 3:** done.
+  - trades with AI valuation
+  - draft picks
+  - retained salary
+  - AI offers and AI-to-AI trades
+  - the trade deadline
+  - playoff sim controls
+- **Next:** the set play creator (section 3), then the offseason (contracts, free agency, draft).

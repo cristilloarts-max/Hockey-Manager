@@ -11,6 +11,7 @@ const SECTIONS := {
 	"HOME": ["Overview", "Inbox"],
 	"SQUAD": ["Players", "Lines", "Contracts"],
 	"TACTICS": ["Tactics"],
+	"TRADES": ["Trade Center", "Offers", "Trade History"],
 	"LEAGUE": ["Schedule", "Standings", "Stats", "Playoffs", "Awards"],
 }
 ## Pages that belong to a section without having their own sub-tab.
@@ -33,6 +34,7 @@ var _record_label: Label
 var _continue_btn: Button
 var _back_btn: Button
 var _fwd_btn: Button
+var _more_popup: PopupMenu
 
 
 static func go(page: String, arg: Variant = null) -> void:
@@ -94,12 +96,8 @@ func _ready() -> void:
 	more.text = "..."
 	more.flat = false
 	more.custom_minimum_size = Vector2(40, 44)
-	var popup := more.get_popup()
-	popup.add_item("Sim to end of season", 0)
-	popup.add_separator()
-	popup.add_item("Save game", 1)
-	popup.add_item("Main menu", 2)
-	popup.id_pressed.connect(_on_menu)
+	_more_popup = more.get_popup()
+	_more_popup.id_pressed.connect(_on_menu)
 	row.add_child(more)
 
 	# ---- row 2: sub-tabs
@@ -156,6 +154,10 @@ func refresh() -> void:
 	_show_page()
 
 
+func refresh_bar() -> void:
+	_refresh_bar()
+
+
 func _show_page() -> void:
 	if _view != null:
 		_view.queue_free()
@@ -188,6 +190,14 @@ func _show_page() -> void:
 			_view = StatsView.new()
 		"Playoffs":
 			_view = PlayoffsView.new()
+		"Trade Center":
+			var tc := TradeCenterView.new()
+			tc.arg = _arg
+			_view = tc
+		"Offers":
+			_view = OffersView.new()
+		"Trade History":
+			_view = TradeHistoryView.new()
 		"Awards":
 			_view = AwardsView.new()
 		_:
@@ -207,21 +217,29 @@ func _show_page() -> void:
 			c.queue_free()
 		for pg in SECTIONS[section]:
 			var b := _sub_button(pg)
+			b.set_meta("page", pg)
 			b.pressed.connect(navigate.bind(pg))
 			_subbar.add_child(b)
 	for s in _menu_buttons:
 		_menu_buttons[s].button_pressed = s == section
 	for b in _subbar.get_children():
 		if b is Button:
-			b.button_pressed = b.text == _page
+			var base: String = b.get_meta("page", b.text)
+			b.button_pressed = base == _page
+			if base == "Offers":
+				b.text = "Offers (%d)" % Game.offers.size() if not Game.offers.is_empty() else "Offers"
 	_back_btn.disabled = _hist_index <= 0
 	_fwd_btn.disabled = _hist_index >= _history.size() - 1
 
 
 func _refresh_bar() -> void:
+	_build_menu()
 	var team_id := Game.user_team_id
 	var r: Dictionary = Game.standings[team_id]
 	_record_label.text = "%s   %s   %d pts" % [League.get_team(team_id).full_name(), Game.record_string(team_id), r["pts"]]
+	if Game.trades_open():
+		var left := Game.days_to_deadline()
+		_record_label.text += "   |   Trade deadline %s" % ("today" if left == 0 else "in %d days" % left)
 	if Game.is_season_over():
 		var champ: String = Game.playoffs.get("champion", "")
 		_date_label.text = "Season complete"
@@ -246,14 +264,21 @@ func _refresh_bar() -> void:
 
 # ------------------------------------------------------------------ actions
 
-func _on_continue() -> void:
+## Shows what's wrong and returns false when your roster isn't legal.
+func _roster_ok() -> bool:
 	var roster_issues := Game.roster_problems(Game.user_team_id)
-	if not roster_issues.is_empty() and Game.phase != "done":
-		var stop := AcceptDialog.new()
-		stop.title = "Fix your roster first"
-		stop.dialog_text = "\n".join(roster_issues) + "\n\nUse Squad > Players to call players up or send them to the reserve list."
-		add_child(stop)
-		stop.popup_centered()
+	if roster_issues.is_empty() or Game.phase == "done":
+		return true
+	var stop := AcceptDialog.new()
+	stop.title = "Fix your roster first"
+	stop.dialog_text = "\n".join(roster_issues) + "\n\nUse Squad > Players to call players up or send them to the reserve list."
+	add_child(stop)
+	stop.popup_centered()
+	return false
+
+
+func _on_continue() -> void:
+	if not _roster_ok():
 		return
 	var lineup: Lineup = Game.lineups[Game.user_team_id]
 	var problems := lineup.problems()
@@ -275,12 +300,35 @@ func _do_continue() -> void:
 		BoxScoreWindow.open(self, mine[-1])
 
 
+## The "..." menu changes with the phase of the season.
+func _build_menu() -> void:
+	_more_popup.clear()
+	if Game.phase == "regular":
+		_more_popup.add_item("Sim to end of regular season", 0)
+	elif Game.phase == "playoffs":
+		_more_popup.add_item("Sim to end of this round", 3)
+		_more_popup.add_item("Sim to end of playoffs", 4)
+	_more_popup.add_separator()
+	_more_popup.add_item("Save game", 1)
+	_more_popup.add_item("Main menu", 2)
+
+
 func _on_menu(id: int) -> void:
 	match id:
 		0:
-			Game.sim_to_end()
+			if not _roster_ok():
+				return
+			Game.sim_to_end_of_regular_season()
 			_refresh_bar()
-			navigate("Standings")
+			navigate("Playoffs")
+		3:
+			Game.sim_playoff_round()
+			_refresh_bar()
+			navigate("Playoffs")
+		4:
+			Game.sim_to_end_of_playoffs()
+			_refresh_bar()
+			navigate("Playoffs")
 		1:
 			var ok := Game.save_game()
 			var dlg := AcceptDialog.new()

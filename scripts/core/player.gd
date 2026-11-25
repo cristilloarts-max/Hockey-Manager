@@ -95,6 +95,8 @@ static func from_dict(d: Dictionary) -> Player:
 		"elc": bool(c.get("elc", false)),
 		"expiry_status": c.get("expiry_status", "UFA"),
 		"no_trade_clause": bool(c.get("no_trade_clause", false)),
+		"retained": int(c.get("retained", 0)),        # cap hit kept by a former team
+		"retained_by": c.get("retained_by", ""),
 	}
 	return p
 
@@ -252,6 +254,11 @@ func lineup_score(spot: String) -> float:
 
 func cap_hit() -> int:
 	return int(contract.get("cap_hit", 0))
+
+
+## What his current team pays against the cap (after any retained salary).
+func team_cap_hit() -> int:
+	return cap_hit() - int(contract.get("retained", 0))
 
 
 func potential_range() -> String:

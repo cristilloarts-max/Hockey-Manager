@@ -10,6 +10,34 @@ See [docs/GAME_DESIGN.md](docs/GAME_DESIGN.md) for the full design and roadmap.
 2. In the Project Manager, choose **Import** and select `project.godot` in this folder.
 3. Press **F5** (Run Project).
 
+## Phase 3: trades and the trade deadline
+
+- **Trade Center** (Trades menu):
+  - Pick a partner and double-click players or picks on either side.
+  - Live panel: cap and roster impact for both teams, plus the AI's reaction (Not interested / Not enough / Close / Deal).
+  - Ask what they want: the AI fills in a package from your assets.
+  - Retain 25% or 50% of an outgoing player's salary (max 3 retained contracts).
+- **AI valuation**:
+  - Each team is a contender, bubble team or rebuilding team, from roster strength and the standings.
+  - Contenders want current ability and rentals; rebuilders want youth, potential and picks.
+  - A player's value grows steeply with his overall, and contracts matter (bargains add value, overpays subtract).
+  - Draft picks: 2027-2029, rounds 1-3. Their value depends on where the original team is projected to finish.
+- **Anti-exploit rules**:
+  - Quality beats quantity: extra pieces count for less, and each extra body costs a roster spot.
+  - AI teams want to win by 5%.
+  - Franchise players cost 35% extra.
+  - Players you acquired in the last 30 days are worth 20% less to AI teams (no flipping).
+  - Trades can't put either team over the cap or leave a team without two goalies.
+  - No-trade clauses: those players only waive for contenders.
+- **The market**:
+  - AI teams send you offers (accept, decline or negotiate); the trading block draws more of them.
+  - AI teams trade with each other: sellers move veterans to contenders.
+  - Activity spikes in deadline week. Every trade appears in Trade History and the inbox.
+- **Trade deadline: March 6.** You get a warning two weeks out; after the deadline, trading closes until the offseason.
+- **Sim controls**:
+  - "Sim to end of regular season" now stops when the playoffs begin.
+  - In the playoffs, use "Sim to end of this round" or "Sim to end of playoffs", or play game by game with Continue.
+
 ## Phase 2: real rosters, roster rules, playoffs and awards
 
 - **Ratings from four seasons of career data.**

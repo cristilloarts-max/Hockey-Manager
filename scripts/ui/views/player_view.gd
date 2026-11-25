@@ -100,6 +100,24 @@ func _header() -> Control:
 	ability.add_child(UI.label("Overall %d" % p.overall, 13, AppTheme.ovr_color(p.overall)))
 	ability.add_child(UI.label("Range %s" % p.potential_range(), 13, AppTheme.MUTED))
 
+	# Trading.
+	if p.team_id != Game.user_team_id:
+		var tb := UI.button("Trade for him", func(): Hub.go("Trade Center", {"team": p.team_id, "player": p.id}))
+		tb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		tb.disabled = not Game.trades_open()
+		row.add_child(tb)
+	else:
+		var on_block: bool = Game.trading_block.has(str(p.id))
+		var bb := UI.button("Remove from trading block" if on_block else "Add to trading block", func():
+			if Game.trading_block.has(str(p.id)):
+				Game.trading_block.erase(str(p.id))
+			else:
+				Game.trading_block[str(p.id)] = true
+			if Hub.current != null:
+				Hub.current.refresh())
+		bb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(bb)
+
 	# Roster move (your players only).
 	if p.team_id == Game.user_team_id:
 		var move := UI.button("Send to Reserve" if p.on_nhl_roster() else "Call Up to NHL", func():

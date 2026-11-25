@@ -92,15 +92,24 @@ func default_lineup(team_id: String) -> Lineup:
 
 ## Cap hit that counts this season: NHL-roster players in full; reserve players
 ## only for the part of their cap hit above the burial allowance.
+## Retained salary from trades also counts for the team that kept it.
 func payroll(team_id: String) -> int:
 	var total := 0
 	var bury: int = finances.get("bury_allowance", 1_150_000)
-	for p in roster(team_id):
-		if p.on_nhl_roster():
-			total += p.cap_hit()
-		else:
-			total += maxi(0, p.cap_hit() - bury)
+	for p in players.values():
+		if p.team_id == team_id:
+			if p.on_nhl_roster():
+				total += p.team_cap_hit()
+			else:
+				total += maxi(0, p.team_cap_hit() - bury)
+		elif p.contract.get("retained_by", "") == team_id:
+			total += int(p.contract.get("retained", 0))
 	return total
+
+
+## Players whose salary this team partly kept after trading them.
+func retained_contracts(team_id: String) -> Array:
+	return players.values().filter(func(p): return p.contract.get("retained_by", "") == team_id)
 
 
 func cap_space(team_id: String) -> int:

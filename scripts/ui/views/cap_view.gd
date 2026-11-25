@@ -53,9 +53,9 @@ func _ready() -> void:
 		var keys := [p.last_name, p.position, p.age, status]
 		for y in YEARS:
 			if y < c["years"]:
-				cells.append(Game.money(c["cap_hit"]))
-				keys.append(c["cap_hit"])
-				totals[y] += c["cap_hit"]
+				cells.append(Game.money(p.team_cap_hit()))
+				keys.append(p.team_cap_hit())
+				totals[y] += p.team_cap_hit()
 			elif y == c["years"]:
 				cells.append(c["expiry_status"])
 				keys.append(0)
@@ -65,7 +65,7 @@ func _ready() -> void:
 		var big := {}
 		for y in YEARS:
 			if y < c["years"]:
-				var share: float = float(c["cap_hit"]) / cap
+				var share: float = float(p.team_cap_hit()) / cap
 				if share >= 0.08:
 					big[4 + y] = AppTheme.GOLD
 				elif share >= 0.04:
@@ -83,4 +83,11 @@ func _ready() -> void:
 	commit.add_child(UI.label("Committed:", 15, UI.MUTED))
 	for y in YEARS:
 		commit.add_child(UI.label("%d-%02d  %s" % [start_year + y, (start_year + y + 1) % 100, Game.money(totals[y])], 15))
+	var kept := League.retained_contracts(team_id)
+	if not kept.is_empty():
+		var row := UI.hbox(14)
+		add_child(row)
+		row.add_child(UI.label("Retained salary (traded away):", 14, AppTheme.ORANGE))
+		for rp in kept:
+			row.add_child(UI.label("%s %s" % [rp.full_name(), Game.money(int(rp.contract["retained"]))], 14))
 	add_child(UI.label("Re-signing, extensions, buyouts and free agency arrive in phase 4.", 0, UI.MUTED))

@@ -10,6 +10,10 @@ const SEASON_START := {"year": 2026, "month": 10, "day": 7, "hour": 12}
 const MONTHS := ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 const WEEKDAYS := ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 const ROUND_NAMES := ["First Round", "Second Round", "Conference Final", "Stanton Cup Final"]
+## Trade deadline: March 6 (day 150 of the calendar that starts October 7).
+const DEADLINE_DAY := 150
+const PICK_YEARS := [2027, 2028, 2029]
+const PICK_ROUNDS := [1, 2, 3]
 
 var active := false
 var user_team_id := ""
@@ -32,6 +36,12 @@ var form := {}               ## pid (String) -> last 5 match ratings
 var morale := {}             ## pid (String) -> 0..100
 var condition := {}          ## pid (String) -> 0..100 (fitness for the next game)
 var rank_history := {}       ## team -> league rank after each game day
+var picks := {}              ## "2027-1-TRL" -> {year, round, orig, owner}
+var trade_history := []      ## {day, a, b, a_gives: [text], b_gives: [text]}
+var offers := []             ## incoming AI offers: {id, trade, from, expires}
+var trading_block := {}      ## pid (String) -> true: your players you're shopping
+var flags := {}              ## one-time messages already sent
+var last_traded := {}        ## pid (String) -> day he was last traded
 var last_sim_day := -1
 
 
@@ -45,9 +55,12 @@ func new_game(team_id: String, game_seed: int = 0) -> void:
 	day = 0
 	phase = "regular"
 	for d in [box_scores, skater_stats, goalie_season, playoff_skaters, playoff_goalies, playoffs,
-			form, condition, rank_history, morale, standings, lineups, tactics]:
+			form, condition, rank_history, morale, standings, lineups, tactics, picks, trading_block, flags,
+			last_traded]:
 		d.clear()
 	awards.clear()
+	trade_history.clear()
+	offers.clear()
 	inbox.clear()
 	last_sim_day = -1
 	var rng := RandomNumberGenerator.new()
@@ -57,6 +70,10 @@ func new_game(team_id: String, game_seed: int = 0) -> void:
 	schedule = Schedule.generate(League.team_list(), rng)
 	for g in schedule:
 		g["played"] = false
+	for year in PICK_YEARS:
+		for rnd in PICK_ROUNDS:
+			for id in League.teams:
+				picks["%d-%d-%s" % [year, rnd, id]] = {"year": year, "round": rnd, "orig": id, "owner": id}
 	for id in League.teams:
 		standings[id] = _empty_record()
 		lineups[id] = League.default_lineup(id)
@@ -209,6 +226,7 @@ func _sim_regular_day() -> Array:
 				mine.append(str(i))
 	day = next_day + 1
 	_record_ranks()
+	_trade_activity()
 	if regular_season_over():
 		_on_regular_season_over()
 	day_advanced.emit()
@@ -232,9 +250,25 @@ func sim_to_next_game() -> Array:
 	return []
 
 
-func sim_to_end() -> void:
+## Sims the rest of the regular season and stops when the playoffs begin.
+func sim_to_end_of_regular_season() -> void:
 	while phase == "regular":
 		_sim_regular_day()
+	day_advanced.emit()
+
+
+## Sims until the current playoff round is over.
+func sim_playoff_round() -> void:
+	if phase != "playoffs":
+		return
+	var round_now: int = playoffs["round"]
+	while phase == "playoffs" and playoffs["round"] == round_now:
+		_sim_playoff_day()
+	day_advanced.emit()
+
+
+## Sims the rest of the playoffs.
+func sim_to_end_of_playoffs() -> void:
 	while phase == "playoffs":
 		_sim_playoff_day()
 	day_advanced.emit()
@@ -436,6 +470,208 @@ func _on_regular_season_over() -> void:
 			"You're in the playoffs! Check League > Playoffs for the bracket." if made_it
 			else "You missed the playoffs. Continue to follow the race for the Stanton Cup."])
 	season_finished.emit()
+
+
+# ------------------------------------------------------------------ trades
+
+func trades_open() -> bool:
+	return phase == "regular" and day <= DEADLINE_DAY
+
+
+func days_to_deadline() -> int:
+	return DEADLINE_DAY - day
+
+
+func pick_label(pick_id: String) -> String:
+	var pk: Dictionary = picks.get(pick_id, {})
+	if pk.is_empty():
+		return pick_id
+	var rnd: int = pk["round"]
+	var nth: String = ["1st", "2nd", "3rd"][rnd - 1]
+	var label := "%d %s round" % [pk["year"], nth]
+	if pk["orig"] != pk["owner"]:
+		label += " (from %s)" % League.get_team(pk["orig"]).name
+	return label
+
+
+func team_picks(team_id: String) -> Array:
+	var out := []
+	for pid in picks:
+		if picks[pid]["owner"] == team_id:
+			out.append(pid)
+	out.sort()
+	return out
+
+
+## Moves players and picks, applies retained salary, fixes AI rosters and
+## lines, and records the trade.
+func execute_trade(trade: Dictionary) -> void:
+	var a: String = trade["a"]
+	var b: String = trade["b"]
+	var retain: Dictionary = trade.get("retain", {})
+	var record := {"day": day, "a": a, "b": b,
+		"a_gives": trade["a_gives"].map(func(x): return TradeAI.describe(x)),
+		"b_gives": trade["b_gives"].map(func(x): return TradeAI.describe(x))}
+	for side in [["a_gives", a, b], ["b_gives", b, a]]:
+		for asset in trade[side[0]]:
+			if asset["type"] == "pick":
+				picks[asset["id"]]["owner"] = side[2]
+				continue
+			var p := League.get_player(int(asset["id"]))
+			var pct := float(retain.get(str(p.id), 0.0))
+			if pct > 0.0:
+				p.contract["retained"] = int(p.cap_hit() * pct)
+				p.contract["retained_by"] = side[1]
+			p.team_id = side[2]
+			p.roster_status = "NHL"
+			last_traded[str(p.id)] = day
+			morale[str(p.id)] = 60
+			trading_block.erase(str(p.id))
+	for t in [a, b]:
+		if t != user_team_id:
+			_ai_fix_roster(t)
+		var l: Lineup = lineups[t]
+		l.drop_ineligible(League.nhl_roster(t))
+		if t != user_team_id:
+			l.auto_fill(League.nhl_roster(t), true)
+	trade_history.append(record)
+	TradeAI._cache_key = ""
+	# Offers involving players who just moved are void.
+	offers = offers.filter(func(o): return TradeAI.legality(o["trade"]) == "")
+	if a == user_team_id or b == user_team_id:
+		var other := b if a == user_team_id else a
+		var got: Array = record["b_gives"] if a == user_team_id else record["a_gives"]
+		var gave: Array = record["a_gives"] if a == user_team_id else record["b_gives"]
+		var extra := ""
+		if not roster_problems(user_team_id).is_empty():
+			extra = "\n\nYour roster needs attention before the next game: " + roster_problems(user_team_id)[0]
+		add_message("Trade completed with the %s" % League.get_team(other).name,
+			"You get: %s\nYou give: %s\n\nNew arrivals start on the NHL roster; check your lines.%s" % [
+				", ".join(got), ", ".join(gave), extra])
+	else:
+		add_message("League trade: %s and %s" % [League.get_team(a).name, League.get_team(b).name],
+			"The %s get %s.\nThe %s get %s." % [League.get_team(b).name, ", ".join(record["a_gives"]),
+				League.get_team(a).name, ", ".join(record["b_gives"])])
+
+
+## AI teams keep a legal roster: at most 23 up, two goalies.
+func _ai_fix_roster(team_id: String) -> void:
+	var nhl := League.nhl_roster(team_id)
+	var goalies := nhl.filter(func(p): return p.is_goalie())
+	if goalies.size() < 2:
+		for p in League.roster(team_id):
+			if p.is_goalie() and not p.on_nhl_roster():
+				p.roster_status = "NHL"
+				break
+	nhl = League.nhl_roster(team_id)
+	var skaters := nhl.filter(func(p): return not p.is_goalie())
+	skaters.sort_custom(func(x, y): return x.overall < y.overall)
+	var i := 0
+	while League.nhl_roster(team_id).size() > roster_max() and i < skaters.size():
+		skaters[i].roster_status = "Reserve"
+		i += 1
+
+
+func accept_offer(offer_id: int) -> String:
+	for o in offers:
+		if o["id"] == offer_id:
+			var e := TradeAI.evaluate(o["trade"], 1.0)
+			if e["blocked"]:
+				offers.erase(o)
+				return e["message"]
+			execute_trade(o["trade"])
+			offers.erase(o)
+			return ""
+	return "That offer is no longer available."
+
+
+func decline_offer(offer_id: int) -> void:
+	offers = offers.filter(func(o): return o["id"] != offer_id)
+
+
+## Daily trade market: AI-to-AI deals and offers for your players, busier as
+## the deadline nears; announcements before and at the deadline.
+func _trade_activity() -> void:
+	offers = offers.filter(func(o): return o["expires"] >= day)
+	var left := days_to_deadline()
+	if left <= 14 and left > 0 and not flags.has("deadline_warning"):
+		flags["deadline_warning"] = true
+		add_message("Trade deadline in %d days" % left,
+			"The deadline is %s. Contenders are buying and rebuilding teams are selling. Use Trades > Trade Center." % date_string(DEADLINE_DAY))
+	if not trades_open():
+		if not flags.has("deadline_passed") and phase == "regular":
+			flags["deadline_passed"] = true
+			add_message("The trade deadline has passed", "Rosters are set for the stretch run and playoffs.")
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash([world_seed, day, "trades"])
+	var ai_ai_chance := 0.05 if left > 10 else (0.3 if left > 0 else 0.9)
+	var tries := 1 if left > 0 else 3
+	for _t in tries:
+		if rng.randf() < ai_ai_chance:
+			_try_ai_ai_trade(rng)
+	var offer_chance := 0.05 + (0.1 if not trading_block.is_empty() else 0.0) + (0.15 if left <= 7 else 0.0)
+	if offers.size() < 4 and rng.randf() < offer_chance:
+		_try_ai_offer(rng)
+
+
+func _try_ai_ai_trade(rng: RandomNumberGenerator) -> void:
+	var sellers := []
+	var buyers := []
+	for t in League.teams:
+		if t == user_team_id:
+			continue
+		match TradeAI.strategy(t):
+			"rebuilding":
+				sellers.append(t)
+			"contender":
+				buyers.append(t)
+	if sellers.is_empty() or buyers.is_empty():
+		return
+	var seller: String = sellers[rng.randi_range(0, sellers.size() - 1)]
+	var buyer: String = buyers[rng.randi_range(0, buyers.size() - 1)]
+	var vets := League.nhl_roster(seller).filter(func(p): return p.age >= 26 and p.overall >= 70 and p.contract["years"] <= 2 and not p.is_goalie())
+	if vets.is_empty():
+		return
+	vets.sort_custom(func(x, y): return x.overall > y.overall)
+	var target = vets[rng.randi_range(0, mini(2, vets.size() - 1))]
+	var trade := TradeAI.build_offer(buyer, seller, target.id)
+	if trade.is_empty() or TradeAI.fair_for(trade, seller) < 0.95:
+		return
+	execute_trade(trade)
+
+
+func _try_ai_offer(rng: RandomNumberGenerator) -> void:
+	var mine := League.roster(user_team_id)
+	if mine.is_empty():
+		return
+	var teams := League.teams.keys().filter(func(t): return t != user_team_id)
+	var ai: String = teams[rng.randi_range(0, teams.size() - 1)]
+	var targets := []
+	for key in trading_block:
+		var bp := League.get_player(int(key))
+		if bp != null and bp.team_id == user_team_id:
+			targets.append(bp)
+	if targets.is_empty() or rng.randf() < 0.4:
+		match TradeAI.strategy(ai):
+			"contender":
+				targets = mine.filter(func(p): return p.overall >= 74 and p.age >= 24 and p != mine[0])
+			"rebuilding":
+				targets = mine.filter(func(p): return p.age <= 23 and p.potential >= 70)
+			_:
+				targets = mine.filter(func(p): return p.overall >= 66 and p.overall <= 82)
+	if targets.is_empty():
+		return
+	var target = targets[rng.randi_range(0, targets.size() - 1)]
+	var trade := TradeAI.build_offer(ai, user_team_id, target.id)
+	if trade.is_empty() or TradeAI.fair_for(trade, user_team_id) < 0.75:
+		return
+	var oid: int = int(flags.get("next_offer_id", 1))
+	flags["next_offer_id"] = oid + 1
+	offers.append({"id": oid, "trade": trade, "from": ai, "expires": day + 5})
+	add_message("Trade offer from the %s" % League.get_team(ai).name,
+		"They want %s and offer %s. Open Trades > Offers to respond (expires in 5 days)." % [
+			target.full_name(), ", ".join(trade["b_gives"].map(func(x): return TradeAI.describe(x)))])
 
 
 # ------------------------------------------------------------------ playoffs
@@ -724,6 +960,8 @@ func save_game() -> bool:
 		"skater_stats": skater_stats, "goalie_season": goalie_season,
 		"playoff_skaters": playoff_skaters, "playoff_goalies": playoff_goalies,
 		"playoffs": playoffs, "awards": awards, "inbox": inbox,
+		"picks": picks, "trade_history": trade_history, "offers": offers,
+		"trading_block": trading_block, "flags": flags, "last_traded": last_traded,
 		"form": form, "morale": morale, "condition": condition, "rank_history": rank_history,
 		"last_sim_day": last_sim_day,
 		"lineups": _map_values(lineups, func(l): return l.to_dict()),
@@ -757,6 +995,12 @@ func load_game() -> bool:
 	playoff_goalies = _intify(data.get("playoff_goalies", {}))
 	playoffs = _intify(data.get("playoffs", {}))
 	awards = _intify(data.get("awards", []))
+	picks = _intify(data.get("picks", {}))
+	trade_history = _intify(data.get("trade_history", []))
+	offers = _intify(data.get("offers", []))
+	trading_block = data.get("trading_block", {})
+	flags = _intify(data.get("flags", {}))
+	last_traded = _intify(data.get("last_traded", {}))
 	inbox = _intify(data["inbox"])
 	form = data.get("form", {})
 	morale = _intify(data.get("morale", {}))

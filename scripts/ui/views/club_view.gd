@@ -107,6 +107,10 @@ func _identity(team: Team) -> Control:
 		grid.add_child(UI.label(r[0], 13, AppTheme.MUTED))
 		grid.add_child(UI.label(r[1], 14))
 	if team.id != Game.user_team_id:
+		facts.add_child(UI.pill(TradeAI.strategy_label(team.id), TradeAI.strategy_color(team.id)))
+		var trade_btn := UI.button("Trade with them", func(): Hub.go("Trade Center", {"team": team.id}))
+		trade_btn.disabled = not Game.trades_open()
+		facts.add_child(trade_btn)
 		facts.add_child(UI.button("Back to my club", func(): Hub.go("Overview")))
 	return panel
 
