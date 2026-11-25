@@ -106,7 +106,7 @@ func _build(res: Dictionary, with_scoreboard: bool) -> VBoxContainer:
 	var pbp_card := UI.card("Play-by-play")
 	var pbp := ""
 	for e in res["events"]:
-		if e["type"] == "shot":
+		if e["type"] == "shot" or e["type"] == "shift":
 			continue
 		var color := "#b8c2d8"
 		match e["type"]:

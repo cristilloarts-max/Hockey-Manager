@@ -5,14 +5,20 @@ extends VBoxContainer
 ## final breakdown. The game is simulated when you press Play; the screen
 ## then plays it back period by period.
 
-const SPEEDS := [["1x", 40.0], ["2x", 80.0], ["4x", 160.0], ["8x", 320.0]]
+## Game seconds per real second: 1x shows a period in about five minutes.
+const SPEEDS := [["0.5x", 2.0], ["1x", 4.0], ["2x", 8.0], ["4x", 16.0], ["8x", 40.0], ["16x", 90.0]]
 const PERIOD_NAMES := ["1ST", "2ND", "3RD", "OT", "2OT", "3OT", "4OT", "5OT"]
 
 var _res: Dictionary = {}
 var _game: Dictionary = {}         ## today's game info before it's played
 var _state := "pre"                ## pre, live, paused, intermission, final
 var _t := 0.0                      ## game clock in seconds since puck drop
-var _speed := 40.0
+var _speed := 8.0
+var _hold := 0.0                   ## real seconds to freeze (after goals)
+var _viz: RinkVisualizer
+var _chor: Choreographer
+var _caption: Label
+var _goal_card: HBoxContainer
 var _ev := 0                       ## next event index
 var _events: Array = []
 var _period_ends: Array = []
@@ -155,6 +161,8 @@ func _start(quick: bool) -> void:
 	_events = _res["events"].duplicate()
 	_events.sort_custom(func(a, b): return float(a.get("t", 0)) < float(b.get("t", 0)))
 	_period_ends = _compute_period_ends()
+	_chor = Choreographer.new()
+	_chor.build(_res, _period_ends)
 	for c in get_children():
 		c.queue_free()
 	_build_live()
@@ -224,8 +232,33 @@ func _build_live() -> void:
 	_body = UI.hbox(12)
 	UI.expand(_body)
 	add_child(_body)
+	# The rink, with an EDGE-style event bar underneath.
+	var rink_col := UI.vbox(8)
+	rink_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rink_col.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_body.add_child(rink_col)
+	var rink_card := PanelContainer.new()
+	rink_card.add_theme_stylebox_override("panel", AppTheme.card_box(Color("#e9edf2"), 14, 6))
+	UI.expand(rink_card)
+	rink_col.add_child(rink_card)
+	_viz = RinkVisualizer.new()
+	_viz.setup(_chor, _res["home"], _res["away"])
+	UI.expand(_viz)
+	rink_card.add_child(_viz)
+	var bar := PanelContainer.new()
+	bar.add_theme_stylebox_override("panel", AppTheme.card_box(AppTheme.PANEL, 12, 10))
+	rink_col.add_child(bar)
+	var bar_row := UI.hbox(14)
+	bar.add_child(bar_row)
+	_caption = UI.label("Puck drop", 16, Color.WHITE)
+	_caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_caption.clip_text = true
+	bar_row.add_child(_caption)
+	_goal_card = UI.hbox(10)
+	bar_row.add_child(_goal_card)
+
 	var feed_card := UI.card("Play-by-play", 14)
-	feed_card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	feed_card.custom_minimum_size = Vector2(340, 0)
 	feed_card.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_body.add_child(feed_card)
 	_feed = RichTextLabel.new()
@@ -339,8 +372,20 @@ func _process(delta: float) -> void:
 			_flash.text = ""
 	if _state != "live":
 		return
-	_t += delta * _speed
+	if _hold > 0.0:
+		_hold -= delta
+		if _viz:
+			_viz.update(_t, 0.0)
+		return
+	var step := delta * _speed
+	_t += step
 	_advance_to(_t)
+	if _viz and _state != "final":
+		_viz.update(_t, step)
+		var st := _chor.state_at(_t)
+		var label: String = st.get("label", "")
+		if label != "":
+			_caption.text = label
 
 
 func _advance_to(t: float) -> void:
@@ -372,6 +417,8 @@ func _update_clock() -> void:
 func _apply(e: Dictionary) -> void:
 	var side := 0 if e["team"] == _res["away"] else 1
 	match e["type"]:
+		"shift":
+			return
 		"shot":
 			_shots[side] += 1
 			_shot_labels[side].text = "SOG %d" % _shots[side]
@@ -385,6 +432,8 @@ func _apply(e: Dictionary) -> void:
 			_flash.text = "GOAL!  %s" % team.full_name().to_upper()
 			_flash.add_theme_color_override("font_color", team.accent())
 			_flash_time = 2.5
+			_hold = 2.2
+			_show_goal_card(e)
 	var color := "#b8c2d8"
 	match e["type"]:
 		"goal":
@@ -406,9 +455,41 @@ func _apply(e: Dictionary) -> void:
 	_feed.text = "\n".join(_feed_lines)
 
 
+## EDGE-style goal card: scorer, assists, score, time, shot type.
+func _show_goal_card(e: Dictionary) -> void:
+	if _goal_card == null:
+		return
+	for c in _goal_card.get_children():
+		c.queue_free()
+	var scorer := League.get_player(int(e.get("pid", 0)))
+	var team := League.get_team(e["team"])
+	var num := UI.pill(str(scorer.number) if scorer else "", team.primary, team.on_primary(), 14)
+	_goal_card.add_child(num)
+	var who := UI.vbox(0)
+	var goals: int = Game.player_line(scorer.id).get("g", 0) if scorer else 0
+	who.add_child(UI.label("%s (%d)%s" % [scorer.full_name() if scorer else "?", goals,
+		"  PPG" if e.get("pp", false) else ("  SHG" if e.get("sh", false) else "")], 15, Color.WHITE))
+	var helpers := []
+	for aid in e.get("assists", []):
+		var ap := League.get_player(int(aid))
+		if ap:
+			helpers.append(ap.short_name())
+	who.add_child(UI.label(", ".join(helpers) if not helpers.is_empty() else "Unassisted", 12, AppTheme.MUTED))
+	_goal_card.add_child(who)
+	var sc: Array = e.get("score", [0, 0])
+	for box in [["%d-%d" % [int(sc[1]), int(sc[0])], "Score"], ["%s (%s)" % [e["time"], e["period"]], "Time"],
+			[str(e.get("shot", "Shot")).capitalize(), "Shot"]]:
+		var b := UI.vbox(0)
+		b.add_child(UI.label(box[0], 15, Color.WHITE))
+		b.add_child(UI.caption(box[1]))
+		_goal_card.add_child(b)
+
+
 func _skip_period() -> void:
 	if _period_idx < _period_ends.size():
 		_advance_to(_period_ends[_period_idx])
+		if _viz and _state != "final":
+			_viz.update(_t, 10.0)
 
 
 func _skip_to_final() -> void:

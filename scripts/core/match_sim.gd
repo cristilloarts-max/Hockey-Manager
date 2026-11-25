@@ -310,6 +310,11 @@ func _update_goalie_pull(time_left: int) -> void:
 func _resolve(units: Array, skaters: Array, seg: int, t_in_period: int, period_start: int,
 		sudden_death: bool, ot: bool) -> void:
 	var late := period >= 3
+	# Who's on the ice this shift (for the rink visualizer).
+	var on_ice := []
+	for i in 2:
+		on_ice.append(units[i].map(func(e): return [e["p"].id, e["spot"]]))
+	_log(-1, "shift", "", t_in_period, {"home": on_ice[0], "away": on_ice[1], "len": seg})
 	var shot_events := []   # [time_in_seg, side]
 	for i in 2:
 		var s: Dictionary = sides[i]
@@ -422,7 +427,7 @@ func _shot(i: int, units: Array, skaters: Array, t_in_period: int, ot: bool) -> 
 	var shooter = shooter_e["p"]
 	s["shots"] += 1
 	_sl(shooter, s["team"].id)["shots"] += 1
-	_log(i, "shot", "", t_in_period)
+	_log(i, "shot", "", t_in_period, {"pid": shooter.id, "spot": shooter_e["spot"], "pp": pp})
 
 	var empty_net: bool = opp["goalie_pulled"]
 	var goalie = opp["goalie"]
@@ -445,6 +450,7 @@ func _shot(i: int, units: Array, skaters: Array, t_in_period: int, ot: bool) -> 
 		goalie_stats[goalie.id]["sa"] += 1
 
 	var shot_type := _shot_type(shooter_e, one_timer)
+	events[-1]["shot"] = shot_type
 	if rng.randf() < prob:
 		_goal(i, unit, units[1 - i], shooter_e, shot_type, pp, sh, empty_net, t_in_period)
 	elif not empty_net and goalie != null and prob > 0.16 and rng.randf() < 0.35:
@@ -557,7 +563,13 @@ func _goal(i: int, unit: Array, opp_unit: Array, shooter_e: Dictionary, shot_typ
 		helpers_txt = ", ".join(assists.map(func(p): return p.short_name()))
 	var text := "GOAL%s! %s scores on a %s. Assists: %s. %s %d, %s %d." % [tag, shooter.short_name(),
 		shot_type, helpers_txt, sides[0]["team"].id, sides[0]["goals"], sides[1]["team"].id, sides[1]["goals"]]
-	_log(i, "goal", text, t_in_period)
+	# Mark the shot that went in, then log the goal with who did it.
+	for k in range(events.size() - 1, -1, -1):
+		if events[k]["type"] == "shot":
+			events[k]["goal"] = true
+			break
+	_log(i, "goal", text, t_in_period, {"pid": shooter.id, "assists": assists.map(func(a): return a.id),
+		"shot": shot_type, "pp": pp, "sh": sh, "en": empty_net})
 
 
 func _take_penalty(i: int, unit: Array, when: int, t_in_period: int) -> void:
@@ -572,7 +584,7 @@ func _take_penalty(i: int, unit: Array, when: int, t_in_period: int) -> void:
 	sides[1 - i]["pp_opps"] += 1
 	_sl(offender, s["team"].id)["pim"] += 2
 	var kind: String = PENALTY_TYPES[rng.randi_range(0, PENALTY_TYPES.size() - 1)]
-	_log(i, "penalty", "Penalty: %s, 2 minutes for %s." % [offender.short_name(), kind], t_in_period)
+	_log(i, "penalty", "Penalty: %s, 2 minutes for %s." % [offender.short_name(), kind], t_in_period, {"pid": offender.id})
 	# A pulled goalie goes back in when his team goes shorthanded.
 	s["goalie_pulled"] = false
 
@@ -678,7 +690,7 @@ func _weighted_index(weights: Array) -> int:
 	return weights.size() - 1
 
 
-func _log(side: int, kind: String, text: String, t_in_period: int = -1) -> void:
+func _log(side: int, kind: String, text: String, t_in_period: int = -1, extra: Dictionary = {}) -> void:
 	var stamp := ""
 	if t_in_period >= 0:
 		stamp = "%d:%02d" % [t_in_period / 60, t_in_period % 60]
@@ -699,6 +711,8 @@ func _log(side: int, kind: String, text: String, t_in_period: int = -1) -> void:
 		t = period * 1200.0
 	events.append({"period": label, "time": stamp, "team": team_id, "type": kind, "text": text, "t": t,
 		"score": [sides[0]["goals"], sides[1]["goals"]], "pnum": period})
+	if not extra.is_empty():
+		events[-1].merge(extra)
 
 
 ## Football Manager-style match ratings (about 6.0-9.5; 6.8 is a solid night).

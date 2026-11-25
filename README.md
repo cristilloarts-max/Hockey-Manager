@@ -10,6 +10,28 @@ See [docs/GAME_DESIGN.md](docs/GAME_DESIGN.md) for the full design and roadmap.
 2. In the Project Manager, choose **Import** and select `project.godot` in this folder.
 3. Press **F5** (Run Project).
 
+## Rink visualizer (EDGE-style)
+
+The match screen draws the game on a white rink:
+- **Players:** numbered circles (home filled in team color, away white with a colored ring), with goalies in their creases.
+- **The puck:** a black puck with a short trail.
+- **What you see:**
+  - faceoffs won by the better faceoff man
+  - breakout passes and neutral-zone rushes
+  - zone entries: carry-ins, dump-and-chase, chip-and-chase or drop passes, following your entry tactic
+  - passing in the offensive zone, then the real shooter shooting from a sensible spot
+  - saves that are frozen (followed by a zone faceoff) or rebounds cleared
+  - turnovers, takeaways, icings, penalties and goals, plus line changes with the real on-ice units
+- **Tactics you can see:**
+  - forecheck shape (1-2-2, 2-1-2, left-wing lock, 1-3-1, all-out)
+  - offensive-zone structure (low cycle, point shots, overload)
+  - power-play formation (1-3-1, umbrella, overload)
+  - penalty-kill shape (box, diamond)
+- **Controls:** speed from 0.5x to 16x and pause are available from the opening faceoff.
+- **Event bar** under the rink: the current play, and an EDGE-style goal card (scorer and season goals, assists, score, time, shot type).
+
+Every shot, goal and penalty happens at the time the sim decided; the play in between is generated to lead up to it.
+
 ## Game days, live matches, roles and the new player page
 
 - **Day by day.**
