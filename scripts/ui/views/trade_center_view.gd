@@ -117,7 +117,7 @@ func _rows(team_id: String, chosen: Array, viewer: String) -> Array:
 			row["bg"] = Color(AppTheme.ACCENT_2, 0.35)
 		rows.append(row)
 	for pick_id in Game.team_picks(team_id):
-		var key := "k:" + pick_id
+		var key: String = "k:" + str(pick_id)
 		var v := TradeAI.pick_value(Game.picks[pick_id], viewer)
 		var row := {"id": key, "cells": ["", Game.pick_label(pick_id), "Pick", "", "", "", "", _value_text(v)],
 			"keys": [0, "zz" + pick_id, "Pick", 0, 0, 0, 0, v],
