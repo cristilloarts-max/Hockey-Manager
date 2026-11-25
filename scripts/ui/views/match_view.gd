@@ -6,14 +6,16 @@ extends VBoxContainer
 ## then plays it back period by period.
 
 ## Game seconds per real second: 1x shows a period in about five minutes.
-const SPEEDS := [["0.5x", 2.0], ["1x", 4.0], ["2x", 8.0], ["4x", 16.0], ["8x", 40.0], ["16x", 90.0]]
+## Game seconds per real second. 1x is slow enough to follow every pass
+## (a 20-minute period takes about 10 minutes).
+const SPEEDS := [["1x", 2.0], ["2x", 4.0], ["4x", 8.0], ["8x", 16.0]]
 const PERIOD_NAMES := ["1ST", "2ND", "3RD", "OT", "2OT", "3OT", "4OT", "5OT"]
 
 var _res: Dictionary = {}
 var _game: Dictionary = {}         ## today's game info before it's played
 var _state := "pre"                ## pre, live, paused, intermission, final
 var _t := 0.0                      ## game clock in seconds since puck drop
-var _speed := 8.0
+var _speed := 2.0
 var _hold := 0.0                   ## real seconds to freeze (after goals)
 var _viz: RinkVisualizer
 var _chor: Choreographer
@@ -165,11 +167,11 @@ func _start(quick: bool) -> void:
 	_chor.build(_res, _period_ends)
 	for c in get_children():
 		c.queue_free()
+	# Set the state first so the speed/pause row is built for live play.
+	_state = "live"
 	_build_live()
 	if quick:
 		_skip_to_final()
-	else:
-		_state = "live"
 
 
 ## When each period ends (seconds since puck drop).
@@ -324,6 +326,7 @@ func _build_controls() -> void:
 				_state = "paused" if _state == "live" else "live"
 				_build_controls())
 			_play_btn.custom_minimum_size = Vector2(110, 40)
+			_play_btn.add_theme_stylebox_override("normal", AppTheme.box(AppTheme.ACCENT if _state == "paused" else AppTheme.PANEL_2, 10, AppTheme.BORDER, 1, 14, 8))
 			_controls.add_child(_play_btn)
 			_controls.add_child(UI.label("Speed", 13, AppTheme.MUTED))
 			var group := ButtonGroup.new()
@@ -386,6 +389,8 @@ func _process(delta: float) -> void:
 		var label: String = st.get("label", "")
 		if label != "":
 			_caption.text = label
+		if _viz.note != "" and _t < _viz.note_until and not _caption.text.ends_with(_viz.note):
+			_caption.text = (label + "     |     " if label != "" else "") + _viz.note
 
 
 func _advance_to(t: float) -> void:

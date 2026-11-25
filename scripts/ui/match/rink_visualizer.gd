@@ -8,7 +8,8 @@ extends Control
 
 const RINK_W := 200.0
 const RINK_H := 85.0
-const SKATE_SPEED := 30.0       ## ft per game-second
+const SKATE_SPEED := 26.0       ## ft per game-second
+const ACCEL := 40.0             ## ft per game-second squared
 const ICE := Color("#f5f7fa")
 const LINE_RED := Color("#d6343e")
 const LINE_BLUE := Color("#2f6fd8")
@@ -22,6 +23,13 @@ var _t := 0.0
 var _period := 1
 var _scorer := 0
 var _scorer_until := 0.0
+var _vel := {}                 ## pid -> Vector2 (ft per game-second)
+var _leaving := {}             ## pid -> side, skating to the bench
+var _boxed := {}               ## pid -> penalty entry
+var _last_units := ["", ""]
+## Latest line-change note for the event bar.
+var note := ""
+var note_until := 0.0
 
 
 func setup(choreographer: Choreographer, home: String, away: String) -> void:
@@ -44,28 +52,94 @@ func update(t: float, dt: float) -> void:
 	if _state["type"] == "goal":
 		_scorer = int(_state["target"])
 		_scorer_until = t + 2.0
-	var max_step := SKATE_SPEED * clampf(dt, 0.0, 3.0)
+	var step := clampf(dt, 0.0, 3.0)
+	var snap := dt > 3.0
+	# Who's in the penalty box right now.
+	_boxed.clear()
+	for pen in chor.penalties:
+		if t >= float(pen["t0"]) and t < float(pen["t1"]):
+			_boxed[int(pen["pid"])] = pen
 	var seen := {}
 	for side in 2:
-		var units: Array = chor.on_ice(side, t)
+		var units: Array = chor.on_ice(side, t).filter(func(e): return not _boxed.has(int(e[0])))
+		_note_line_change(side, units)
 		var targets := _targets(side, units, puck)
 		for pid in targets:
 			seen[pid] = true
-			var goal: Vector2 = targets[pid]
+			_leaving.erase(pid)
 			if not _pos.has(pid):
-				# New shift: skate on from the bench (center of the top boards).
-				_pos[pid] = Vector2(-10.0 if side == 0 else 10.0, -RINK_H / 2 + 2)
-			var cur: Vector2 = _pos[pid]
-			if pid == int(_state.get("carrier", 0)):
-				_pos[pid] = puck
-			elif dt > 3.0:
-				_pos[pid] = goal
-			else:
-				_pos[pid] = cur.move_toward(goal, max_step)
+				# Fresh legs jump on from the bench.
+				_pos[pid] = _bench(side, pid)
+				_vel[pid] = Vector2.ZERO
+			_move(pid, targets[pid], step, snap, pid == int(_state.get("carrier", 0)), puck)
+	# Players coming off skate to their bench; boxed players sit in the box.
 	for pid in _pos.keys():
-		if not seen.has(pid):
+		if seen.has(pid):
+			continue
+		if _boxed.has(pid):
+			_pos[pid] = _box_spot(int(_boxed[pid]["side"]))
+			continue
+		var side := _side_of(pid)
+		if not _leaving.has(pid):
+			_leaving[pid] = side
+		var bench := _bench(side, pid)
+		_move(pid, bench, step, snap, false, puck)
+		if _pos[pid].distance_to(bench) < 2.5 or snap:
 			_pos.erase(pid)
+			_vel.erase(pid)
+			_leaving.erase(pid)
 	queue_redraw()
+
+
+## Smooth skating: accelerate toward the target, glide, never teleport.
+func _move(pid: int, target: Vector2, step: float, snap: bool, carrier: bool, puck: Vector2) -> void:
+	if snap:
+		_pos[pid] = puck if carrier else target
+		_vel[pid] = Vector2.ZERO
+		return
+	if carrier:
+		_vel[pid] = (puck - _pos[pid]) / maxf(step, 0.01)
+		_pos[pid] = puck
+		return
+	var cur: Vector2 = _pos[pid]
+	var v: Vector2 = _vel.get(pid, Vector2.ZERO)
+	var to := target - cur
+	var dist := to.length()
+	var cap := SKATE_SPEED * (1.25 if _is_hitter(pid) else 1.0)
+	var want := to.normalized() * minf(cap, dist * 1.8) if dist > 0.05 else Vector2.ZERO
+	v = v.move_toward(want, ACCEL * step)
+	_vel[pid] = v
+	_pos[pid] = cur + v * step
+
+
+func _is_hitter(pid: int) -> bool:
+	return _state.get("type", "") == "hit" and int(_state.get("target", 0)) == pid
+
+
+func _side_of(pid: int) -> int:
+	var p := League.get_player(pid)
+	return 0 if p != null and p.team_id == teams[0] else 1
+
+
+## Bench doors along the top boards (home left of center, away right).
+func _bench(side: int, pid: int) -> Vector2:
+	var x := -18.0 + float(pid % 7) * 2.0
+	return Vector2(x if side == 0 else -x, -RINK_H / 2 - 5.0)
+
+
+func _box_spot(side: int) -> Vector2:
+	return Vector2(-9.0 if side == 0 else 9.0, RINK_H / 2 + 5.0)
+
+
+## Announce line changes: "on the fly" during play, plain at stoppages.
+func _note_line_change(side: int, units: Array) -> void:
+	var key := ",".join(units.map(func(e): return str(e[0])))
+	if _last_units[side] != "" and key != _last_units[side]:
+		var stoppage: bool = _state.get("type", "") in ["whistle", "faceoff", "goal"]
+		var team = League.get_team(teams[side])
+		note = "%s %s" % [team.name if team else "", "line change" if stoppage else "change on the fly"]
+		note_until = _t + 4.0
+	_last_units[side] = key
 
 
 # ------------------------------------------------------------------ formations
@@ -75,32 +149,41 @@ func _targets(side: int, units: Array, puck: Vector2) -> Dictionary:
 	var out := {}
 	var d := Choreographer.dir_for(side, _period)
 	var poss: int = _state.get("side", -1)
+	var kind: String = _state.get("type", "")
 	var px := puck.x * d                 # puck in this team's attack frame
 	var py := -puck.y * d
 	var mine := units.size()
-	var theirs: int = chor.on_ice(1 - side, _t).size()
+	var theirs: int = chor.on_ice(1 - side, _t).filter(func(e): return not _boxed.has(int(e[0]))).size()
 	var tac: Tactics = Game.tactics.get(teams[side])
 	var spots := {}
+	var stopped := kind in ["faceoff", "whistle", "goal"]
 	for e in units:
 		var spot: String = e[1]
+		var pid := int(e[0])
 		var f := Vector2.ZERO
-		if _state.get("type", "") == "faceoff" or _state.get("type", "") == "whistle":
+		if stopped:
 			f = _faceoff_spot(spot, px, py)
 		elif poss == side:
 			if mine > theirs and px > 20:
 				f = _pp_spot(spot, tac.get_value("power_play.formation") if tac else 0, py)
+				f += _sway(pid, 4.0)
 			else:
-				f = _attack_spot(spot, px, py, tac)
+				f = _attack_spot(spot, px, py, tac, units.find(e), side)
 		elif poss == 1 - side:
 			if mine < theirs and px < -20:
 				f = _pk_spot(spot, tac.get_value("penalty_kill.formation") if tac else 0, py)
+				f += _sway(pid, 2.5)
 			else:
 				f = _defend_spot(spot, px, py, tac)
+				if px < -25.0:
+					f = _cover(side, spot, f, tac, d)
 		else:
 			f = _faceoff_spot(spot, px, py)
-		spots[int(e[0])] = f
+		if not stopped:
+			f += _sway(pid, 3.0)
+		spots[pid] = f
 	# The nearest defender pressures the puck carrier.
-	if poss == 1 - side and _state.get("type", "") in ["carry", "hold"]:
+	if poss == 1 - side and kind in ["carry", "hold", "hit"]:
 		var best := 0
 		var best_d := INF
 		for pid in spots:
@@ -110,6 +193,11 @@ func _targets(side: int, units: Array, puck: Vector2) -> Dictionary:
 				best = pid
 		if best != 0:
 			spots[best] = Vector2(px - 4.0, py + signf(-py + 0.01) * 2.5)
+	# Hitter drives through the carrier.
+	if kind == "hit":
+		var hitter := int(_state.get("target", 0))
+		if spots.has(hitter):
+			spots[hitter] = Vector2(px, py)
 	for pid in spots:
 		var f: Vector2 = spots[pid]
 		f.x = clampf(f.x, -94.0, 94.0)
@@ -117,8 +205,41 @@ func _targets(side: int, units: Array, puck: Vector2) -> Dictionary:
 		out[pid] = Vector2(f.x * d, -f.y * d)
 	var g := chor.goalie(side)
 	if g != 0:
-		out[g] = Vector2(-86.0 * d, clampf(puck.y * 0.12, -2.5, 2.5))
+		var net := Vector2(-88.0 * d, 0)
+		var gp := net + Vector2(d * 1.5, clampf(puck.y * 0.15, -3.0, 3.0))
+		if kind == "save" and int(_state.get("carrier", 0)) == g:
+			gp = puck            # dives to smother it
+		elif kind == "shot" and absf(puck.x - net.x) < 40.0:
+			gp = net + Vector2(d * 4.0, clampf(puck.y * 0.2, -4.0, 4.0))   # challenges the shooter
+		out[g] = gp
 	return out
+
+
+## Small personal drift so nobody ever stands still.
+func _sway(pid: int, amp: float) -> Vector2:
+	var ph := float(pid % 997) * 0.37
+	return Vector2(sin(_t * 0.8 + ph) * amp, cos(_t * 0.6 + ph * 1.7) * amp * 0.8)
+
+
+## Defenders cover their man (goal-side), blended with zone positions per the
+## coverage tactic: zone, man-to-man, hybrid or swarm.
+func _cover(side: int, spot: String, zone_spot: Vector2, tac: Tactics, d: float) -> Vector2:
+	var assign := {"LD": "RW", "RD": "LW", "C": "C", "LW": "RD", "RW": "LD"}
+	var want: String = assign.get(spot, "C")
+	var man := 0
+	for e in chor.on_ice(1 - side, _t):
+		if e[1] == want:
+			man = int(e[0])
+	if man == 0 or not _pos.has(man):
+		return zone_spot
+	var mp: Vector2 = _pos[man]
+	var mf := Vector2(mp.x * d, -mp.y * d)
+	var goal_side := mf + (Vector2(-89, 0) - mf).normalized() * 5.0
+	var system := tac.get_value("d_zone.system") if tac else 0
+	var w: float = [0.45, 0.85, 0.65, 0.5][clampi(system, 0, 3)]
+	if system == 3:
+		zone_spot = zone_spot.lerp(Vector2(-78, 0), 0.4)
+	return zone_spot.lerp(goal_side, w)
 
 
 func _faceoff_spot(spot: String, px: float, py: float) -> Vector2:
@@ -137,52 +258,69 @@ func _faceoff_spot(spot: String, px: float, py: float) -> Vector2:
 	return dot + Vector2(-10, 0)
 
 
-func _attack_spot(spot: String, px: float, py: float, tac: Tactics) -> Vector2:
+## Attacking positions. In the offensive zone the forwards rotate through the
+## structure's three spots every few seconds (cycling, swapping, getting open)
+## and the D walk the line; on the rush they fill lanes; in their own zone
+## they set up the breakout.
+func _attack_spot(spot: String, px: float, py: float, tac: Tactics, idx: int, side: int) -> Vector2:
 	var structure := tac.get_value("o_zone.structure") if tac else 0
 	if px > 25.0:
-		# Offensive zone.
 		var s := signf(py + 0.01)
-		match spot:
-			"LD":
-				return Vector2(31, 17 if structure != 2 or s > 0 else 8)
-			"RD":
-				return Vector2(31, -17 if structure != 2 or s < 0 else -8)
-			"C":
-				return Vector2(84 if structure == 1 else 68, py * 0.3)
-			"LW":
-				if structure == 0:
-					return Vector2(78, 26) if s > 0 else Vector2(70, 6)
-				return Vector2(62, 22)
-			"RW":
-				if structure == 0:
-					return Vector2(78, -26) if s < 0 else Vector2(70, -6)
-				return Vector2(62, -22)
+		var ph := float(side) * 1.6
+		if spot == "LD" or spot == "RD":
+			var base_y := 17.0 if spot == "LD" else -17.0
+			var activate := tac.get_value("o_zone.d_activation") if tac else 1
+			var strong := signf(base_y) == s
+			# Active D sneak down the wall on the strong side every other rotation.
+			if activate >= 2 and strong and int((_t + ph) / 3.2) % 2 == 1:
+				return Vector2(56, s * 27)
+			return Vector2(33 + sin(_t * 0.7 + ph) * 3.0, base_y + sin(_t * 0.9 + ph + base_y) * 6.0)
+		var anchors: Array
+		match structure:
+			0:
+				anchors = [Vector2(82, s * 25), Vector2(70, s * 4), Vector2(62, -s * 20)]
+			1:
+				anchors = [Vector2(84, s * 6), Vector2(84, -s * 6), Vector2(64, s * 22)]
+			2:
+				anchors = [Vector2(80, s * 28), Vector2(64, s * 20), Vector2(72, s * 6)]
+			_:
+				anchors = [Vector2(78, s * 22), Vector2(70, 0), Vector2(62, -s * 22)]
+		var order := {"C": 0, "LW": 1, "RW": 2}
+		var k: int = order.get(spot, idx % 3)
+		var rot := int((_t + ph) / 3.2)
+		var target: Vector2 = anchors[(k + rot) % 3]
+		# One forward always comes to support the puck carrier.
+		if (k + rot) % 3 == 1 and Vector2(px, py).distance_to(target) > 18.0:
+			target = target.lerp(Vector2(px - 8, py * 0.5), 0.45)
+		return target
 	elif px > -25.0:
 		# Rush through the neutral zone; non-carriers stay onside until the puck is in.
+		var lane := sin(_t * 0.5 + float(side)) * 4.0
 		match spot:
 			"LW":
-				return Vector2(minf(px + 12, 23), 25)
+				return Vector2(minf(px + 12, 23), 25 + lane)
 			"RW":
-				return Vector2(minf(px + 12, 23), -25)
+				return Vector2(minf(px + 12, 23), -25 + lane)
 			"C":
-				return Vector2(px - 4, py * 0.4)
+				return Vector2(px - 4, py * 0.4 + lane)
 			"LD":
 				return Vector2(px - 24, 12)
 			"RD":
 				return Vector2(px - 24, -12)
 	else:
-		# Breakout from their own zone.
+		# Breakout from their own zone: wingers on the wall, center swinging low.
+		var swing := sin(_t * 0.9 + float(side)) * 8.0
 		match spot:
 			"LD":
 				return Vector2(-80, 12)
 			"RD":
 				return Vector2(-80, -12)
 			"C":
-				return Vector2(-64, 0)
+				return Vector2(-66 + swing * 0.5, swing)
 			"LW":
-				return Vector2(-52, 32)
+				return Vector2(-52 + swing * 0.3, 32)
 			"RW":
-				return Vector2(-52, -32)
+				return Vector2(-52 - swing * 0.3, -32)
 	return Vector2(px - 10, 0)
 
 
@@ -264,7 +402,7 @@ func _pk_spot(spot: String, formation: int, py: float) -> Vector2:
 # ------------------------------------------------------------------ drawing
 
 func _scale() -> float:
-	return minf((size.x - 20) / RINK_W, (size.y - 20) / RINK_H)
+	return minf((size.x - 20) / RINK_W, (size.y - 20) / (RINK_H + 18.0))
 
 
 func _to_px(p: Vector2) -> Vector2:
@@ -329,6 +467,24 @@ func _draw() -> void:
 		draw_set_transform(end, -PI / 2 * d, Vector2.ONE)
 		draw_string(fnt2, Vector2(-40, 8 * s * 0.4 + 6), t.id, HORIZONTAL_ALIGNMENT_CENTER, 80, int(5.5 * s), t.accent())
 		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+	# Benches (top) and penalty boxes (bottom), outside the boards.
+	var small := AppTheme.font("caption")
+	for side in 2:
+		var tb = League.get_team(teams[side])
+		var bx := -30.0 if side == 0 else 6.0
+		var bench := Rect2(_to_px(Vector2(bx, -RINK_H / 2 - 8.5)), Vector2(24.0 * s, 6.5 * s))
+		draw_rect(bench, Color(tb.primary if tb else Color.GRAY, 0.18))
+		var changing := _leaving.values().has(side)
+		draw_string(small, bench.position + Vector2(4, -4), ("LINE CHANGE" if changing else "BENCH") + "  " + (tb.id if tb else ""),
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, AppTheme.ACCENT if changing else Color("#7b8798"))
+		var box := Rect2(_to_px(Vector2(-14.0 if side == 0 else 3.0, RINK_H / 2 + 2.0)), Vector2(11.0 * s, 6.5 * s))
+		draw_rect(box, Color(AppTheme.RED, 0.12))
+		draw_string(small, box.position + Vector2(2, box.size.y + 12), "PENALTY BOX", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color("#7b8798"))
+	for pid in _boxed:
+		var pen: Dictionary = _boxed[pid]
+		var left := maxf(0.0, float(pen["t1"]) - _t)
+		draw_string(small, _to_px(_box_spot(int(pen["side"]))) + Vector2(16, 5), "%d:%02d" % [int(left) / 60, int(left) % 60],
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, AppTheme.RED)
 	# Players.
 	var r := maxf(9.0, 2.6 * s)
 	var font := AppTheme.font("display_bold")
@@ -337,10 +493,17 @@ func _draw() -> void:
 		var t = League.get_team(teams[side])
 		var ring: Color = t.primary if t.primary.get_luminance() < 0.75 else t.secondary
 		for pid in _pos:
-			if not _belongs(pid, side):
+			if _side_of(pid) != side:
 				continue
 			var c := _to_px(_pos[pid])
 			var p := League.get_player(pid)
+			var faded := _leaving.has(pid) or _boxed.has(pid)
+			if faded:
+				draw_circle(c, r * 0.8, Color(t.primary if side == 0 else Color.WHITE, 0.55))
+				draw_arc(c, r * 0.8, 0, TAU, 24, Color(ring, 0.6), 1.5, true)
+				draw_string(font, c + Vector2(-r, r * 0.3), str(p.number) if p else "", HORIZONTAL_ALIGNMENT_CENTER, r * 2, int(r * 0.85),
+					Color(t.on_primary() if side == 0 else ring, 0.8))
+				continue
 			var num := str(p.number) if p else ""
 			if pid == carrier or (pid == _scorer and _t < _scorer_until):
 				draw_arc(c, r + 4, 0, TAU, 32, ring, 2.5, true)
@@ -353,6 +516,21 @@ func _draw() -> void:
 				draw_circle(c, r, Color.WHITE)
 				draw_arc(c, r - 1, 0, TAU, 32, ring, 2.5, true)
 				draw_string(font, c + Vector2(-r, r * 0.38), num, HORIZONTAL_ALIGNMENT_CENTER, r * 2, int(r * 1.05), ring)
+	# Impact burst on a body check.
+	if _state.get("type", "") == "hit":
+		var victim := int(_state.get("carrier", 0))
+		if _pos.has(victim):
+			var c := _to_px(_pos[victim])
+			for k in 8:
+				var a := TAU * k / 8.0 + _t * 3.0
+				draw_line(c + Vector2(cos(a), sin(a)) * (r + 3), c + Vector2(cos(a), sin(a)) * (r + 10), Color("#ffb020"), 2.5, true)
+	# Whistle banner.
+	if _state.get("type", "") == "whistle":
+		var txt: String = str(_state.get("label", "Whistle")).replace("Whistle: ", "")
+		var bw := 360.0
+		var bpos := Vector2(size.x / 2 - bw / 2, _to_px(Vector2(0, -RINK_H / 2)).y + 10)
+		draw_style_box(AppTheme.box(Color(0.05, 0.07, 0.12, 0.85), 10), Rect2(bpos, Vector2(bw, 30)))
+		draw_string(AppTheme.font("semibold"), bpos + Vector2(0, 20), "WHISTLE  -  " + txt.to_upper(), HORIZONTAL_ALIGNMENT_CENTER, bw, 13, Color.WHITE)
 	# Puck and trail.
 	for i in range(_trail.size() - 1, 0, -1):
 		draw_circle(_to_px(_trail[i]), maxf(2.0, 0.8 * s) * (1.0 - i / 8.0), Color(0, 0, 0, 0.12 * (8 - i) / 8.0))

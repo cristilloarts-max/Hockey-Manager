@@ -17,6 +17,8 @@ const NET_X := 89.0
 const BLUE_X := 25.0
 
 var actions: Array = []
+## Players in the penalty box: {pid, side, t0, t1}.
+var penalties: Array = []
 var _res: Dictionary
 var _teams := ["", ""]
 var _shifts: Array = []      ## [t, home units, away units]
@@ -189,7 +191,7 @@ func _emit(type: String, dur: float, to: Vector2, side: int, carrier: int, targe
 	_side = side if side >= 0 else _side
 	if type == "pass":
 		_carrier = target
-	elif type in ["carry", "hold", "faceoff"]:
+	elif type in ["carry", "hold", "faceoff", "hit"]:
 		_carrier = carrier
 	else:
 		_carrier = 0
@@ -265,16 +267,38 @@ func _filler(until: float) -> void:
 		var roll := _rng.randf()
 		if fx < BLUE_X:
 			var style := _tac(side, "entry.style")
+			if roll < 0.07:
+				# Offside: the winger crosses the line ahead of the puck.
+				_emit("carry", minf(1.6, left * 0.3), _w(side, 27.0, y * 0.6), side, carrier)
+				_emit("whistle", 2.0, _pos, -1, 0, 0, "Whistle: offside")
+				_faceoff(_w(side, 20.0, 22.0 if _rng.randf() < 0.5 else -22.0), "Neutral-zone faceoff after offside")
+				continue
 			if roll < 0.12:
+				# Open-ice hit in the neutral zone knocks the puck loose.
+				_hit(side, carrier, true)
+				continue
+			if roll < 0.24:
 				# Icing: fired the length of the ice from behind the red line.
 				_emit("dump", minf(1.6, left * 0.4), _w(side, NET_X, _rng.randf_range(-12, 12)), side, carrier, 0, "Icing")
-				_emit("whistle", 0.8, _pos, -1, 0, 0, "Icing on the %s" % League.get_team(_teams[side]).name)
+				_emit("whistle", 2.0, _pos, -1, 0, 0, "Whistle: icing on the %s" % League.get_team(_teams[side]).name)
 				_faceoff_in_zone(side, 1.0 if _rng.randf() < 0.5 else -1.0, "Faceoff after icing")
 			elif roll < 0.55 or style in [1, 2]:
 				var corner := _w(side, 84.0, -signf(y + 0.01) * 30.0)
 				_emit("dump", minf(1.4, left * 0.35), corner, side, carrier, 0,
 					"Dump and chase" if style == 1 else ("Chip and chase" if style == 2 else "Dump in"))
 				var chase := _rng.randf() < (0.45 if style in [1, 2] else 0.3)
+				if not chase and _rng.randf() < 0.18:
+					# The goalie comes out to play it behind the net.
+					var gk := goalie(1 - side)
+					var behind := _w(side, 92.0, _rng.randf_range(-8, 8))
+					_emit("hold", 1.0, behind, 1 - side, gk, 0, "%s stops it behind the net" % _name(gk))
+					if _rng.randf() < 0.35:
+						_emit("whistle", 1.8, behind, -1, 0, 0, "Whistle: %s freezes it" % _name(gk))
+						_faceoff_in_zone(1 - side, 1.0 if _rng.randf() < 0.5 else -1.0, "Faceoff after the goalie freeze")
+					else:
+						var dd := _player(1 - side, ["LD", "RD"])
+						_emit("pass", 0.7, _w(1 - side, -80.0, _rng.randf_range(-14, 14)), 1 - side, gk, dd, "%s moves it to %s" % [_name(gk), _name(dd)])
+					continue
 				if chase:
 					var f := _player(side, ["C", "LW", "RW"])
 					_emit("hold", minf(1.4, left * 0.35), corner + Vector2(_rng.randf_range(-3, 3), 0), side, f, 0,
@@ -285,6 +309,14 @@ func _filler(until: float) -> void:
 					var d := _player(1 - side, ["LD", "RD"])
 					_emit("hold", minf(1.4, left * 0.35), corner, 1 - side, d,
 						0, "%s retrieves%s" % [_name(d), _forecheck_note(side)])
+					# Forecheckers finish their checks (more with aggressive systems).
+					var fc := _tac(side, "forecheck.system")
+					if _rng.randf() < (0.5 if fc in [1, 4] else 0.3):
+						_hit(1 - side, d, _rng.randf() < 0.35)
+					elif _rng.randf() < 0.1:
+						_emit("dump", 1.2, _w(1 - side, 40.0, 41.0 * signf(_rng.randf() - 0.5)), 1 - side, d, 0, "Puck over the glass")
+						_emit("whistle", 2.0, _pos, -1, 0, 0, "Whistle: puck out of play")
+						_faceoff_in_zone(1 - side, 1.0 if _rng.randf() < 0.5 else -1.0, "Defensive-zone faceoff")
 			else:
 				_emit("carry", minf(2.2, left * 0.4), _w(side, 40.0, y * 0.8), side, carrier, 0, "Zone entry")
 				_cycle(side, minf(_t + _rng.randf_range(2.0, 5.0), until - 1.0))
@@ -296,6 +328,40 @@ func _filler(until: float) -> void:
 		var side := _side if _side >= 0 else 0
 		_emit("carry", until - _t, _pos + Vector2(_rng.randf_range(-6, 6), _rng.randf_range(-4, 4)), side,
 			_carrier if _carrier != 0 else _player(side, ["C"]))
+
+
+## A body check on `victim` (of `victim_side`). If `loose`, the puck squirts
+## free and the hitting team takes it; otherwise he absorbs it and keeps it.
+func _hit(victim_side: int, victim: int, loose: bool) -> void:
+	var hitters := on_ice(1 - victim_side, _t)
+	if hitters.is_empty() or victim == 0:
+		return
+	var weights := []
+	for e in hitters:
+		var hp := League.get_player(int(e[0]))
+		weights.append(pow(float(hp.detail("body_checking")) if hp else 8.0, 2))
+	var total := 0.0
+	for w in weights:
+		total += w
+	var r := _rng.randf() * total
+	var hitter := int(hitters[0][0])
+	for i in weights.size():
+		r -= weights[i]
+		if r <= 0:
+			hitter = int(hitters[i][0])
+			break
+	var hp2 := League.get_player(hitter)
+	var big := hp2 != null and hp2.detail("body_checking") >= 14
+	var label := "%s %s %s" % [_name(hitter), "lays out" if big else "finishes his check on", _name(victim)]
+	if big:
+		label = "BIG HIT! " + label
+	_emit("hit", 0.7, _pos, victim_side, victim, hitter, label)
+	if loose:
+		var spot := _pos + Vector2(_rng.randf_range(-6, 6), _rng.randf_range(-5, 5))
+		_emit("rebound", 0.5, spot, 1 - victim_side, 0, 0, "Puck knocked loose")
+		_emit("hold", 0.6, spot, 1 - victim_side, hitter, 0, "%s comes away with it" % _name(hitter))
+	else:
+		_emit("carry", 0.5, _pos, victim_side, victim, 0, "%s absorbs the hit and keeps it" % _name(victim))
 
 
 func _forecheck_note(attacking_side: int) -> String:
@@ -321,6 +387,8 @@ func _cycle(side: int, until: float) -> void:
 		var p := League.get_player(mate)
 		var spot := _zone_spot(side, p, mate)
 		_emit("pass", 0.7, spot, side, holder, mate)
+		if _rng.randf() < 0.18 and until - _t > 1.5:
+			_hit(side, mate, false)
 		var hold := minf(_rng.randf_range(0.5, 1.6), maxf(0.1, until - _t))
 		_emit("carry", hold, spot + _w(side, _rng.randf_range(-3, 3), _rng.randf_range(-3, 3)) - _w(side, 0, 0), side, mate)
 
@@ -419,8 +487,8 @@ func _play_to_shot(e: Dictionary) -> void:
 		var gpos := _w(side, NET_X - 3.0, _fy(side, net) * 0.5)
 		_emit("shot", 0.3, gpos, side, shooter, 0, shot_label)
 		if _rng.randf() < 0.45:
-			_emit("save", 0.6, gpos, 1 - side, g, 0, "Save by %s, he holds on" % _name(g))
-			_emit("whistle", 0.5, gpos, -1, 0, 0, "")
+			_emit("save", 0.8, gpos, 1 - side, g, 0, "%s smothers the puck" % _name(g))
+			_emit("whistle", 1.8, gpos, -1, 0, 0, "Whistle: %s covers it up" % _name(g))
 			_faceoff_in_zone(1 - side, signf(_fy(1 - side, target) + 0.01), "Faceoff after the save")
 		else:
 			var reb := _w(side, NET_X - 12.0, _rng.randf_range(-14, 14))
@@ -436,9 +504,16 @@ func _pp_label(side: int) -> String:
 
 func _penalty(e: Dictionary) -> void:
 	var pt := float(e["t"])
+	var pen_side := 0 if e["team"] == _teams[0] else 1
+	var t_end := pt + 120.0
+	for g in _res["events"]:
+		if g["type"] == "goal" and g["team"] != e["team"] and float(g["t"]) > pt and float(g["t"]) < t_end:
+			t_end = float(g["t"])
+			break
+	penalties.append({"pid": int(e.get("pid", 0)), "side": pen_side, "t0": pt, "t1": t_end})
 	if pt - _t > 1.5:
 		_filler(pt)
 	_t = maxf(_t, pt)
 	var side := 0 if e["team"] == _teams[0] else 1
-	_emit("whistle", 1.0, _pos, -1, 0, 0, e.get("text", "Penalty"))
+	_emit("whistle", 2.5, _pos, -1, 0, 0, "Whistle: " + str(e.get("text", "Penalty")))
 	_faceoff_in_zone(side, 1.0 if _rng.randf() < 0.5 else -1.0, "Faceoff, %s short-handed" % League.get_team(_teams[side]).name)
